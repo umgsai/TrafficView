@@ -99,4 +99,18 @@ mod tests {
         assert_eq!(state.update((10, 20), Duration::from_secs(1)), None);
         assert!(state.update((1034, 2100), Duration::from_secs(1)).is_some());
     }
+
+    #[test]
+    fn long_gap_discards_frame_and_rebuilds_baseline() {
+        let mut state = NetState::default();
+        state.update((100, 200), Duration::from_secs(1));
+        assert_eq!(
+            state.update((100_000, 200_000), Duration::from_secs(6)),
+            None
+        );
+        let resumed = state
+            .update((101_024, 202_048), Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(resumed, (1024, 2048));
+    }
 }
