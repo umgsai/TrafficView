@@ -1,0 +1,10 @@
+[package]
+name = "trafficview-collectors"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+trafficview-core = { path = "../core" }
+
+[dev-dependencies]
+tempfile = "3"
