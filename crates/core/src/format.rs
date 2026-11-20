@@ -39,6 +39,9 @@ mod tests {
         assert_eq!(counter_rate(100, 90, Duration::from_secs(1)), None);
         assert_eq!(counter_rate(100, 200, Duration::ZERO), None);
         assert_eq!(counter_rate(100, 200, Duration::from_secs(6)), None);
-        assert_eq!(counter_rate(100, 350, Duration::from_millis(500)), Some(500));
+        assert_eq!(
+            counter_rate(100, 350, Duration::from_millis(500)),
+            Some(500)
+        );
     }
 }

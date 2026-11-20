@@ -48,7 +48,10 @@ impl ProcNetDev {
     pub fn sample(&mut self, iface: &str, elapsed: Duration) -> io::Result<Option<NetSample>> {
         let text = fs::read_to_string(self.root.join("net/dev"))?;
         let totals = parse_proc_net_dev(&text, iface).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, format!("interface {iface} not found"))
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("interface {iface} not found"),
+            )
         })?;
         Ok(self
             .state

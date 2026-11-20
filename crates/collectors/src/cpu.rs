@@ -82,8 +82,12 @@ mod tests {
 
     #[test]
     fn computes_total_and_per_core_usage() {
-        let before = parse_proc_stat("cpu 100 0 100 800 0 0 0 0 0 0\ncpu0 100 0 100 800 0 0 0 0 0 0\n").unwrap();
-        let after = parse_proc_stat("cpu 150 0 150 1100 0 0 0 0 0 0\ncpu0 150 0 150 1100 0 0 0 0 0 0\n").unwrap();
+        let before =
+            parse_proc_stat("cpu 100 0 100 800 0 0 0 0 0 0\ncpu0 100 0 100 800 0 0 0 0 0 0\n")
+                .unwrap();
+        let after =
+            parse_proc_stat("cpu 150 0 150 1100 0 0 0 0 0 0\ncpu0 150 0 150 1100 0 0 0 0 0 0\n")
+                .unwrap();
         let (total, cores) = cpu_usage(&before, &after).unwrap();
         assert_eq!(total, 25.0);
         assert_eq!(cores, vec![25.0]);
