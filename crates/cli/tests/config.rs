@@ -37,8 +37,7 @@ fn config_set_rejects_unknown_key_and_invalid_value() {
         .assert()
         .failure();
 
-    let text =
-        std::fs::read_to_string(dir.path().join("trafficview/config.toml")).unwrap();
+    let text = std::fs::read_to_string(dir.path().join("trafficview/config.toml")).unwrap();
     assert!(text.contains("sample_interval_ms = 1000"), "{text}");
 }
 

@@ -46,6 +46,11 @@ enum Commands {
     Resume,
     /// 请求 daemon 退出。
     Quit,
+    /// 启动 X11 悬浮窗（只订阅 D-Bus，不读 /proc）。
+    Overlay {
+        #[arg(long, default_value = "x11")]
+        session: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -73,13 +78,19 @@ fn main() -> Result<()> {
         Commands::Pause => call_daemon("Pause", &(true)),
         Commands::Resume => call_daemon("Pause", &(false)),
         Commands::Quit => call_daemon("Quit", &()),
+        Commands::Overlay { session } => {
+            if session != "x11" {
+                bail!("only --session x11 is supported in M1");
+            }
+            let config = ConfigStore::xdg()?.load_or_create()?;
+            trafficview_ui_x11::run(config)
+        }
     }
 }
 
 fn connect() -> Result<zbus::blocking::Connection> {
-    zbus::blocking::Connection::session().context(
-        "cannot connect to the session bus; is a graphical session with D-Bus available?",
-    )
+    zbus::blocking::Connection::session()
+        .context("cannot connect to the session bus; is a graphical session with D-Bus available?")
 }
 
 fn status(json: bool) -> Result<()> {
@@ -171,7 +182,9 @@ fn config(command: ConfigCommand) -> Result<()> {
                 Ok(status) if status.success() => (|| -> Result<()> {
                     let text = std::fs::read_to_string(&tmp)?;
                     let edited: Config = toml::from_str(&text)?;
-                    edited.validate().map_err(|message| anyhow::anyhow!(message))?;
+                    edited
+                        .validate()
+                        .map_err(|message| anyhow::anyhow!(message))?;
                     store.save(&edited)?;
                     config = edited;
                     Ok(())
@@ -207,11 +220,14 @@ fn apply_setting(config: &mut Config, key: &str, value: &str) -> Result<()> {
         }
         other => bail!("unsupported config key: {other}"),
     }
-    config.validate().map_err(|message| anyhow::anyhow!(message))?;
+    config
+        .validate()
+        .map_err(|message| anyhow::anyhow!(message))?;
     Ok(())
 }
 
-fn sample(interface: &str, interval_ms: u64, count: usize) -> Result<()> {    if count == 0 {
+fn sample(interface: &str, interval_ms: u64, count: usize) -> Result<()> {
+    if count == 0 {
         bail!("--count must be greater than zero");
     }
     let started = Instant::now();

@@ -17,6 +17,7 @@ zbus = "4"
 trafficview-core = { path = "../core" }
 trafficview-collectors = { path = "../collectors" }
 trafficview-daemon = { path = "../daemon" }
+trafficview-ui-x11 = { path = "../ui-x11" }
 
 [dev-dependencies]
 assert_cmd = "2"
