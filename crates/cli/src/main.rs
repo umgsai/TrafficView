@@ -59,17 +59,17 @@ fn main() -> Result<()> {
                 let (total_pct, per_core) = cpu
                     .sample(elapsed)?
                     .context("CPU baseline was invalidated; retry")?;
-                let snapshot = Snapshot {
-                    ts_ms: monotonic_ms(),
+                let snapshot = Snapshot::new(
+                    monotonic_ms(),
                     net,
-                    cpu: CpuSample {
+                    CpuSample {
                         total_pct,
                         per_core,
                         freq_mhz: None,
                         load: None,
                     },
-                    mem: read_mem(Path::new("/proc"))?,
-                };
+                    read_mem(Path::new("/proc"))?,
+                );
                 println!("{}", serde_json::to_string(&snapshot)?);
             }
             Ok(())
