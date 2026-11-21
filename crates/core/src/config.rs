@@ -3,7 +3,13 @@
 //! 字段一旦发布只允许新增（带 serde 默认值），不重命名、不改单位。
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::{
+    collections::HashSet,
+    env,
+    fmt, fs, io,
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 /// 采样间隔允许范围（毫秒）。
 pub const SAMPLE_INTERVAL_MIN_MS: u32 = 500;
@@ -158,6 +164,153 @@ impl Config {
             }
         }
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub enum ConfigError {
+    Io(io::Error),
+    Parse(toml::de::Error),
+    Serialize(toml::ser::Error),
+    Invalid(String),
+    NoConfigDir,
+}
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => write!(f, "config I/O error: {error}"),
+            Self::Parse(error) => write!(f, "invalid config TOML: {error}"),
+            Self::Serialize(error) => write!(f, "cannot encode config: {error}"),
+            Self::Invalid(message) => write!(f, "invalid config: {message}"),
+            Self::NoConfigDir => write!(f, "neither XDG_CONFIG_HOME nor HOME is set"),
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::Parse(error) => Some(error),
+            Self::Serialize(error) => Some(error),
+            Self::Invalid(_) | Self::NoConfigDir => None,
+        }
+    }
+}
+
+impl From<io::Error> for ConfigError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl From<toml::de::Error> for ConfigError {
+    fn from(error: toml::de::Error) -> Self {
+        Self::Parse(error)
+    }
+}
+
+impl From<toml::ser::Error> for ConfigError {
+    fn from(error: toml::ser::Error) -> Self {
+        Self::Serialize(error)
+    }
+}
+
+/// XDG 配置文件的读写边界：校验、原子替换、不覆盖损坏文件。
+#[derive(Debug, Clone)]
+pub struct ConfigStore {
+    path: PathBuf,
+}
+
+impl ConfigStore {
+    pub fn at(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    /// `$XDG_CONFIG_HOME/trafficview/config.toml`，未设置时 `$HOME/.config/...`。
+    pub fn xdg() -> Result<Self, ConfigError> {
+        if let Some(dir) = env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
+            return Ok(Self::at(
+                PathBuf::from(dir).join("trafficview").join("config.toml"),
+            ));
+        }
+        let home = env::var_os("HOME")
+            .filter(|value| !value.is_empty())
+            .ok_or(ConfigError::NoConfigDir)?;
+        Ok(Self::at(
+            PathBuf::from(home)
+                .join(".config")
+                .join("trafficview")
+                .join("config.toml"),
+        ))
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn load(&self) -> Result<Config, ConfigError> {
+        let text = fs::read_to_string(&self.path)?;
+        let config: Config = toml::from_str(&text)?;
+        config.validate().map_err(ConfigError::Invalid)?;
+        Ok(config)
+    }
+
+    /// 文件缺失时写入默认配置；已存在但损坏时返回错误且不改动原文件。
+    pub fn load_or_create(&self) -> Result<Config, ConfigError> {
+        match self.load() {
+            Ok(config) => Ok(config),
+            Err(ConfigError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+                let config = Config::default();
+                self.save(&config)?;
+                Ok(config)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// 校验 → 同目录临时文件 → fsync → rename → 父目录 fsync。
+    pub fn save(&self, config: &Config) -> Result<(), ConfigError> {
+        config.validate().map_err(ConfigError::Invalid)?;
+        let text = toml::to_string_pretty(config)?;
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let tmp = self.temp_path();
+        let write = (|| -> io::Result<()> {
+            let mut file = fs::File::create(&tmp)?;
+            use io::Write;
+            file.write_all(text.as_bytes())?;
+            file.sync_all()
+        })();
+        if let Err(error) = write {
+            let _ = fs::remove_file(&tmp);
+            return Err(error.into());
+        }
+        if let Err(error) = fs::rename(&tmp, &self.path) {
+            let _ = fs::remove_file(&tmp);
+            return Err(error.into());
+        }
+        if let Some(parent) = self.path.parent() {
+            if let Ok(dir) = fs::File::open(parent) {
+                let _ = dir.sync_all();
+            }
+        }
+        Ok(())
+    }
+
+    fn temp_path(&self) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0);
+        let name = self
+            .path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "config.toml".into());
+        self.path.with_file_name(format!(".{name}.tmp.{}.{nonce}", std::process::id()))
     }
 }
 
