@@ -35,6 +35,17 @@ enum Commands {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    /// 查询 daemon 当前快照。
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// 暂停采样（暂停期间 status 返回退出码 2）。
+    Pause,
+    /// 恢复采样。
+    Resume,
+    /// 请求 daemon 退出。
+    Quit,
 }
 
 #[derive(Subcommand)]
@@ -58,7 +69,75 @@ fn main() -> Result<()> {
             count,
         } => sample(&interface, interval_ms, count),
         Commands::Config { command } => config(command),
+        Commands::Status { json } => status(json),
+        Commands::Pause => call_daemon("Pause", &(true)),
+        Commands::Resume => call_daemon("Pause", &(false)),
+        Commands::Quit => call_daemon("Quit", &()),
     }
+}
+
+fn connect() -> Result<zbus::blocking::Connection> {
+    zbus::blocking::Connection::session().context(
+        "cannot connect to the session bus; is a graphical session with D-Bus available?",
+    )
+}
+
+fn status(json: bool) -> Result<()> {
+    let connection = connect()?;
+    let proxy = zbus::blocking::Proxy::new(
+        &connection,
+        "com.trafficview.Daemon1",
+        "/com/trafficview/Daemon1",
+        "com.trafficview.Daemon1",
+    )
+    .context("cannot build the trafficviewd proxy")?;
+    let reply = proxy
+        .call_method("GetSnapshot", &())
+        .context("cannot query trafficviewd; is the daemon running?");
+    let reply = match reply {
+        Ok(reply) => reply,
+        Err(error) if format!("{error:#}").contains("daemon is paused") => {
+            eprintln!("daemon is paused");
+            std::process::exit(2);
+        }
+        Err(error) => return Err(error),
+    };
+    let dict: std::collections::HashMap<String, zbus::zvariant::OwnedValue> =
+        reply.body().deserialize()?;
+    let snapshot = trafficview_daemon::dbus::snapshot_from_dbus(&dict)?;
+    if json {
+        println!("{}", serde_json::to_string(&snapshot)?);
+    } else {
+        println!(
+            "iface={} ↓{} ↑{} CPU {:.0}% MEM {:.0}% ts={}ms",
+            snapshot.net.iface,
+            trafficview_core::format::format_rate(snapshot.net.rx_bps),
+            trafficview_core::format::format_rate(snapshot.net.tx_bps),
+            snapshot.cpu.total_pct,
+            snapshot.mem.used_pct,
+            snapshot.ts_ms
+        );
+    }
+    Ok(())
+}
+
+fn call_daemon<B>(method: &str, body: &B) -> Result<()>
+where
+    B: serde::Serialize + zbus::zvariant::DynamicType,
+{
+    let connection = connect()?;
+    let proxy = zbus::blocking::Proxy::new(
+        &connection,
+        "com.trafficview.Daemon1",
+        "/com/trafficview/Daemon1",
+        "com.trafficview.Daemon1",
+    )
+    .context("cannot build the trafficviewd proxy")?;
+    proxy
+        .call_method(method, body)
+        .with_context(|| format!("cannot call {method}; is trafficviewd running?"))?;
+    println!("{method} ok");
+    Ok(())
 }
 
 fn config(command: ConfigCommand) -> Result<()> {
@@ -132,8 +211,7 @@ fn apply_setting(config: &mut Config, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-fn sample(interface: &str, interval_ms: u64, count: usize) -> Result<()> {
-    if count == 0 {
+fn sample(interface: &str, interval_ms: u64, count: usize) -> Result<()> {    if count == 0 {
         bail!("--count must be greater than zero");
     }
     let started = Instant::now();

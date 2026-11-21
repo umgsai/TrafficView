@@ -1,0 +1,26 @@
+[package]
+name = "trafficview-daemon"
+version.workspace = true
+edition.workspace = true
+description = "TrafficView sampling daemon and D-Bus v1 service"
+
+[lib]
+name = "trafficview_daemon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "trafficviewd"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zbus = { version = "4", default-features = false, features = ["tokio"] }
+trafficview-core = { path = "../core" }
+trafficview-collectors = { path = "../collectors" }
+
+[dev-dependencies]
+futures-util = "0.3"
+tempfile = "3"
