@@ -1,7 +1,7 @@
 # TrafficView 项目状态
 
-> 最后更新：2026-11-20
-> 当前里程碑：M0 已完成，M1 尚未开始
+> 最后更新：2026-11-21
+> 当前里程碑：M0 已完成（含时序语义对齐），M1 尚未开始
 
 ## 一句话
 
@@ -49,13 +49,17 @@ cargo build --workspace --release
 1. M0 计划 Task 2 断言算错：`1128−100` 应为 1028，计划写 1024；代码按正确值。
 2. `thiserror` 未使用会触发 unused-dependency，与「clippy 无警告」冲突，已从 collectors 依赖移除，M1 需要错误类型时再加。
 3. 计划要求用 nload 对照，但安装需 sudo；改用 `ip -s link`。htop 由用户安装后纳入 CPU 对照。
-4. CPU 差分没有 dt 门限（计划给的 `ProcCpu` API 不含时间戳），建议 M1 daemon 调度在 `dt>5s` 时跳帧。
-5. `ts_ms` 是相对进程启动的单调毫秒，不是 CLOCK_MONOTONIC 绝对时间。
+4. ~~CPU 差分没有 dt 门限~~ → 已修（`813e2aa`）：`dt==0` 或 `dt>5s` 只更新基线不出值，与网络采集一致。
+5. ~~`ts_ms` 是相对进程启动的毫秒~~ → 已修（`813e2aa`）：改为 CLOCK_MONOTONIC 绝对基准毫秒（`crates/core/src/clock.rs`）。
 
-## 下次开工前需要拍板
+## 时序语义（已对齐路线图第 3 节）
 
-1. `ts_ms` 的语义（相对启动 vs 绝对单调时钟）——M1 冻结 D-Bus 契约前必须定。
-2. CPU 差分是否在 M1 的 daemon 层加 `dt>5s` 跳帧。
+- 所有采样差分使用 `CLOCK_MONOTONIC`；首帧、计数器倒退、`dt > 5s` 不生成速率。
+- `ts_ms` = 自 CLOCK_MONOTONIC 零点（通常为开机，不含休眠）起的毫秒数，跨进程同一基准。
+
+## 已知但暂不处理
+
+- 本仓库尚未 push 到 GitHub：本机无任何 GitHub 凭据（无 credential helper、无 SSH key、无 gh）。本地领先远端 5+ 个提交，等你提供 PAT 或 SSH key 后 `git push origin master`。
 
 ## superpowers 安装状态
 
@@ -66,4 +70,4 @@ cargo build --workspace --release
 
 ## 下一步
 
-M1（X11 MVP）：`docs/superpowers/plans/2026-11-20-m1-x11-mvp.md`。开工前先定上面两个问题。
+M1（X11 MVP）：`docs/superpowers/plans/2026-11-20-m1-x11-mvp.md`。M0 的前置问题已清零，可直接开工；D-Bus v1 契约在 M1 冻结。
