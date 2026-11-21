@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=TrafficView
+Comment=Network, CPU and memory monitor
+Exec=trafficview tray --autostart
+Icon=trafficview
+Terminal=false
+X-GNOME-Autostart-enabled=true

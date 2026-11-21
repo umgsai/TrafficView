@@ -1625,6 +1625,7 @@ dependencies = [
  "trafficview-collectors",
  "trafficview-core",
  "trafficview-daemon",
+ "trafficview-tray",
  "trafficview-ui-x11",
  "zbus",
 ]
@@ -1669,6 +1670,20 @@ dependencies = [
  "cosmic-text",
  "tiny-skia",
  "trafficview-core",
+]
+
+[[package]]
+name = "trafficview-tray"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures-util",
+ "serde",
+ "tokio",
+ "trafficview-core",
+ "trafficview-daemon",
+ "trafficview-render",
+ "zbus",
 ]
 
 [[package]]

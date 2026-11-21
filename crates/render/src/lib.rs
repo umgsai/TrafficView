@@ -195,7 +195,7 @@ pub fn render(snapshot: &Snapshot, config: &Config, dpi: u32) -> RenderedFrame {
 
     // RGBA → BGRA（保留预乘 alpha）。
     let mut bgra = Vec::with_capacity(layout.width as usize * layout.height as usize * 4);
-    for pixel in pixmap.data().chunks_exact(4) {
+    for pixel in pixmap.data().as_chunks::<4>().0 {
         bgra.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
     }
     let regions = layout
@@ -283,6 +283,54 @@ fn blend_glyph(pixmap: &mut Pixmap, x: i32, y: i32, width: u32, height: u32, col
     }
 }
 
+/// 22×22 SNI 图标：ARGB 网络字节序（A,R,G,B），两行条形表示上下行。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrayIcon {
+    pub width: i32,
+    pub height: i32,
+    pub argb: Vec<u8>,
+}
+
+pub fn tray_icon(snapshot: &Snapshot) -> TrayIcon {
+    const SIZE: usize = 22;
+    let mut pixels = vec![0u8; SIZE * SIZE * 4];
+    draw_bar(
+        &mut pixels,
+        SIZE,
+        5,
+        snapshot.net.rx_bps,
+        [0x8C, 0xE9, 0x9A],
+    );
+    draw_bar(
+        &mut pixels,
+        SIZE,
+        13,
+        snapshot.net.tx_bps,
+        [0x7F, 0xD1, 0xFF],
+    );
+    TrayIcon {
+        width: SIZE as i32,
+        height: SIZE as i32,
+        argb: pixels,
+    }
+}
+
+fn draw_bar(pixels: &mut [u8], size: usize, y: usize, rate: u64, color: [u8; 3]) {
+    let width = ((rate.max(1) as f64).log10() * 3.0)
+        .round()
+        .clamp(2.0, 18.0) as usize;
+    let x0 = (size - width) / 2;
+    for dy in 0..4 {
+        for x in x0..(x0 + width).min(size) {
+            let offset = ((y + dy) * size + x) * 4;
+            pixels[offset] = 255;
+            pixels[offset + 1] = color[0];
+            pixels[offset + 2] = color[1];
+            pixels[offset + 3] = color[2];
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,6 +359,32 @@ mod tests {
                 swap_pct: 0.0,
             },
         )
+    }
+
+    #[test]
+    fn tray_icon_is_argb_and_scales_with_traffic() {
+        let snapshot = snapshot();
+        let icon = tray_icon(&snapshot);
+        assert_eq!((icon.width, icon.height), (22, 22));
+        assert_eq!(icon.argb.len(), 22 * 22 * 4);
+        let opaque = icon
+            .argb
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|px| px[0] > 0)
+            .count();
+        assert!(opaque > 0);
+        let mut faster = snapshot.clone();
+        faster.net.rx_bps = 10 * 1024 * 1024;
+        let fast_opaque = tray_icon(&faster)
+            .argb
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|px| px[0] > 0)
+            .count();
+        assert!(fast_opaque >= opaque);
     }
 
     #[test]
@@ -375,12 +449,19 @@ mod tests {
 
     #[test]
     fn opacity_is_written_to_alpha_and_hit_regions_stay_inside() {
-        let mut config = Config::default();
-        config.overlay.opacity = 0.5;
+        let config = Config {
+            overlay: trafficview_core::config::OverlayConfig {
+                opacity: 0.5,
+                ..Default::default()
+            },
+            ..Config::default()
+        };
         let frame = render(&snapshot(), &config, 96);
         let max_alpha = frame
             .argb
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|px| px[3])
             .max()
             .unwrap_or(0);

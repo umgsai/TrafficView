@@ -22,6 +22,7 @@ trait Daemon1 {
     fn set_interval(&self, ms: u32) -> zbus::Result<()>;
     fn pause(&self, paused: bool) -> zbus::Result<()>;
     fn reload_config(&self) -> zbus::Result<()>;
+    fn set_overlay_visible(&self, visible: bool) -> zbus::Result<()>;
 
     #[zbus(property)]
     fn sample_interval(&self) -> zbus::Result<u32>;
@@ -32,6 +33,9 @@ trait Daemon1 {
 
     #[zbus(signal)]
     fn sample(&self, snapshot: HashMap<String, OwnedValue>) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    fn config_changed(&self) -> zbus::Result<()>;
 }
 
 struct TestDaemon {
@@ -151,6 +155,19 @@ async fn snapshot_properties_and_interval_validation_are_exposed() {
     // zbus 的 Proxy 会缓存属性值；用新 proxy 读取真实状态。
     let fresh = harness.proxy().await.unwrap();
     assert_eq!(fresh.sample_interval().await.unwrap(), 1500);
+}
+
+#[tokio::test]
+async fn overlay_visibility_change_notifies_frontends() {
+    let _guard = BUS_LOCK.lock().await;
+    let harness = TestDaemon::spawn().await.unwrap();
+    let proxy = harness.proxy().await.unwrap();
+    let mut stream = proxy.receive_config_changed().await.unwrap();
+    proxy.set_overlay_visible(false).await.unwrap();
+    timeout(Duration::from_secs(3), stream.next())
+        .await
+        .expect("ConfigChanged signal timed out")
+        .expect("signal stream ended");
 }
 
 #[tokio::test]

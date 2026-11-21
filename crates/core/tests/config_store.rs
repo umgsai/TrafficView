@@ -24,8 +24,10 @@ fn save_rejects_invalid_config_without_touching_disk() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
     let store = ConfigStore::at(path.clone());
-    let mut cfg = Config::default();
-    cfg.sample_interval_ms = 10;
+    let cfg = Config {
+        sample_interval_ms: 10,
+        ..Config::default()
+    };
     assert!(store.save(&cfg).is_err());
     assert!(!path.exists());
 }
@@ -34,9 +36,14 @@ fn save_rejects_invalid_config_without_touching_disk() {
 fn save_round_trips_and_leaves_no_temp_files() {
     let dir = tempfile::tempdir().unwrap();
     let store = ConfigStore::at(dir.path().join("config.toml"));
-    let mut cfg = Config::default();
-    cfg.sample_interval_ms = 1500;
-    cfg.overlay.position = [10, 20];
+    let cfg = Config {
+        sample_interval_ms: 1500,
+        overlay: trafficview_core::config::OverlayConfig {
+            position: [10, 20],
+            ..Default::default()
+        },
+        ..Config::default()
+    };
     store.save(&cfg).unwrap();
     assert_eq!(store.load().unwrap(), cfg);
     let leftovers: Vec<_> = std::fs::read_dir(dir.path())

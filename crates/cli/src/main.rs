@@ -51,6 +51,23 @@ enum Commands {
         #[arg(long, default_value = "x11")]
         session: String,
     },
+    /// 启动 StatusNotifierItem 托盘。
+    Tray {
+        #[arg(long)]
+        autostart: bool,
+    },
+    /// 管理 XDG autostart 条目。
+    Autostart {
+        #[command(subcommand)]
+        command: AutostartCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum AutostartCommand {
+    Enable,
+    Disable,
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -85,7 +102,62 @@ fn main() -> Result<()> {
             let config = ConfigStore::xdg()?.load_or_create()?;
             trafficview_ui_x11::run(config)
         }
+        Commands::Tray { autostart: _ } => trafficview_tray::run(),
+        Commands::Autostart { command } => autostart(command),
     }
+}
+
+fn autostart_path() -> Result<std::path::PathBuf> {
+    let config_home = env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            env::var_os("HOME")
+                .filter(|value| !value.is_empty())
+                .map(|home| std::path::PathBuf::from(home).join(".config"))
+        })
+        .context("neither XDG_CONFIG_HOME nor HOME is set")?;
+    Ok(config_home.join("autostart").join("trafficview.desktop"))
+}
+
+fn autostart_desktop(executable: &std::path::Path) -> String {
+    format!(
+        "[Desktop Entry]\nType=Application\nName=TrafficView\nComment=Network, CPU and memory monitor\nExec={} tray --autostart\nIcon=trafficview\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
+        executable.display()
+    )
+}
+
+fn autostart(command: AutostartCommand) -> Result<()> {
+    let path = autostart_path()?;
+    match command {
+        AutostartCommand::Enable => {
+            let executable = env::current_exe().context("cannot locate the trafficview binary")?;
+            let contents = autostart_desktop(&executable);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            // 幂等：内容相同时不重复写盘。
+            if std::fs::read_to_string(&path).ok().as_deref() != Some(contents.as_str()) {
+                std::fs::write(&path, contents)?;
+            }
+            println!("{}", path.display());
+        }
+        AutostartCommand::Disable => match std::fs::remove_file(&path) {
+            Ok(()) => println!("disabled {}", path.display()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                println!("already disabled")
+            }
+            Err(error) => return Err(error.into()),
+        },
+        AutostartCommand::Status => {
+            if path.is_file() {
+                println!("enabled {}", path.display());
+            } else {
+                println!("disabled {}", path.display());
+            }
+        }
+    }
+    Ok(())
 }
 
 fn connect() -> Result<zbus::blocking::Connection> {

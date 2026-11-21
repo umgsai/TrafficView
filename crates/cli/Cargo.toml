@@ -18,6 +18,7 @@ trafficview-core = { path = "../core" }
 trafficview-collectors = { path = "../collectors" }
 trafficview-daemon = { path = "../daemon" }
 trafficview-ui-x11 = { path = "../ui-x11" }
+trafficview-tray = { path = "../tray" }
 
 [dev-dependencies]
 assert_cmd = "2"

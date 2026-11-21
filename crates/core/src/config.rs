@@ -329,11 +329,18 @@ mod tests {
 
     #[test]
     fn rejects_invalid_values() {
-        let mut cfg = Config::default();
-        cfg.sample_interval_ms = 100;
+        let cfg = Config {
+            sample_interval_ms: 100,
+            ..Config::default()
+        };
         assert!(cfg.validate().is_err());
-        cfg = Config::default();
-        cfg.overlay.opacity = 1.1;
+        let cfg = Config {
+            overlay: OverlayConfig {
+                opacity: 1.1,
+                ..OverlayConfig::default()
+            },
+            ..Config::default()
+        };
         assert!(cfg.validate().is_err());
     }
 
