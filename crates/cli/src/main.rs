@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 use trafficview_collectors::{cpu::ProcCpu, mem::read_mem, net::ProcNetDev};
-use trafficview_core::{CpuSample, Snapshot};
+use trafficview_core::{clock::monotonic_ms, CpuSample, Snapshot};
 
 #[derive(Parser)]
 #[command(name = "trafficview", version)]
@@ -45,7 +45,9 @@ fn main() -> Result<()> {
             let _ = net
                 .sample(&interface, Duration::ZERO)
                 .context("establish network baseline")?;
-            let _ = cpu.sample().context("establish CPU baseline")?;
+            let _ = cpu
+                .sample(Duration::ZERO)
+                .context("establish CPU baseline")?;
             for _ in 0..count {
                 thread::sleep(Duration::from_millis(interval_ms));
                 let now = Instant::now();
@@ -55,10 +57,10 @@ fn main() -> Result<()> {
                     .sample(&interface, elapsed)?
                     .context("network baseline was invalidated; retry")?;
                 let (total_pct, per_core) = cpu
-                    .sample()?
+                    .sample(elapsed)?
                     .context("CPU baseline was invalidated; retry")?;
                 let snapshot = Snapshot {
-                    ts_ms: started.elapsed().as_millis() as u64,
+                    ts_ms: monotonic_ms(),
                     net,
                     cpu: CpuSample {
                         total_pct,

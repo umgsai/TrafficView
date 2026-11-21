@@ -1,6 +1,7 @@
 use std::{
     fs, io,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,11 +63,17 @@ impl ProcCpu {
         }
     }
 
-    pub fn sample(&mut self) -> io::Result<Option<(f32, Vec<f32>)>> {
+    pub fn sample(&mut self, elapsed: Duration) -> io::Result<Option<(f32, Vec<f32>)>> {
         let current = parse_proc_stat(&fs::read_to_string(self.root.join("stat"))?)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid /proc/stat"))?;
         let previous = self.previous.replace(current.clone());
-        Ok(previous.and_then(|old| cpu_usage(&old, &current)))
+        let Some(old) = previous else {
+            return Ok(None);
+        };
+        if elapsed.is_zero() || elapsed > Duration::from_secs(5) {
+            return Ok(None);
+        }
+        Ok(cpu_usage(&old, &current))
     }
 }
 
@@ -79,6 +86,7 @@ impl Default for ProcCpu {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{fs, time::Duration};
 
     #[test]
     fn computes_total_and_per_core_usage() {
@@ -98,5 +106,35 @@ mod tests {
         let before = parse_proc_stat("cpu 100 0 100 800 0 0 0 0 0 0\n").unwrap();
         let after = parse_proc_stat("cpu 1 0 1 8 0 0 0 0 0 0\n").unwrap();
         assert_eq!(cpu_usage(&before, &after), None);
+    }
+
+    fn write_stat(dir: &Path, line: &str) {
+        fs::write(dir.join("stat"), format!("{line}\ncpu0 {}\n", &line[4..])).unwrap();
+    }
+
+    #[test]
+    fn long_gap_discards_frame_and_rebuilds_baseline() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cpu = ProcCpu::new(dir.path());
+        write_stat(dir.path(), "cpu 100 0 100 800 0 0 0 0 0 0");
+        assert_eq!(cpu.sample(Duration::ZERO).unwrap(), None);
+        write_stat(dir.path(), "cpu 150 0 150 1100 0 0 0 0 0 0");
+        assert_eq!(cpu.sample(Duration::from_secs(6)).unwrap(), None);
+        write_stat(dir.path(), "cpu 200 0 200 1200 0 0 0 0 0 0");
+        let (total, cores) = cpu.sample(Duration::from_secs(1)).unwrap().unwrap();
+        assert_eq!(total, 50.0);
+        assert_eq!(cores, vec![50.0]);
+    }
+
+    #[test]
+    fn zero_elapsed_discards_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cpu = ProcCpu::new(dir.path());
+        write_stat(dir.path(), "cpu 100 0 100 800 0 0 0 0 0 0");
+        assert_eq!(cpu.sample(Duration::ZERO).unwrap(), None);
+        write_stat(dir.path(), "cpu 150 0 150 1100 0 0 0 0 0 0");
+        assert_eq!(cpu.sample(Duration::ZERO).unwrap(), None);
+        write_stat(dir.path(), "cpu 200 0 200 1200 0 0 0 0 0 0");
+        assert!(cpu.sample(Duration::from_secs(1)).unwrap().is_some());
     }
 }
