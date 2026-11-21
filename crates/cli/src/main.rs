@@ -239,6 +239,7 @@ fn config(command: ConfigCommand) -> Result<()> {
             let mut config = store.load_or_create()?;
             apply_setting(&mut config, &key, &value)?;
             store.save(&config)?;
+            reload_daemon();
             println!("{} = {}", key, value);
             Ok(())
         }
@@ -259,6 +260,7 @@ fn config(command: ConfigCommand) -> Result<()> {
                         .map_err(|message| anyhow::anyhow!(message))?;
                     store.save(&edited)?;
                     config = edited;
+                    reload_daemon();
                     Ok(())
                 })(),
                 Ok(status) => Err(anyhow::anyhow!("editor exited with {status}")),
@@ -270,6 +272,22 @@ fn config(command: ConfigCommand) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn reload_daemon() {
+    // daemon 未运行时配置写入仍然成功，只是热加载稍后自然生效。
+    let Ok(connection) = zbus::blocking::Connection::session() else {
+        return;
+    };
+    let Ok(proxy) = zbus::blocking::Proxy::new(
+        &connection,
+        "com.trafficview.Daemon1",
+        "/com/trafficview/Daemon1",
+        "com.trafficview.Daemon1",
+    ) else {
+        return;
+    };
+    let _ = proxy.call_method("ReloadConfig", &());
 }
 
 fn apply_setting(config: &mut Config, key: &str, value: &str) -> Result<()> {
