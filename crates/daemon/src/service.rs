@@ -9,11 +9,7 @@ use std::{
 
 use tokio::sync::{watch, RwLock};
 use tracing::{debug, info, warn};
-use trafficview_collectors::{
-    cpu::ProcCpu,
-    mem::read_mem_with_mode,
-    net::ProcNetDev,
-};
+use trafficview_collectors::{cpu::ProcCpu, mem::read_mem_with_mode, net::ProcNetDev};
 use trafficview_core::{
     clock::monotonic_ms,
     config::{Config, ConfigStore},
@@ -61,9 +57,8 @@ pub fn parse_default_route(text: &str) -> Option<String> {
 
 pub fn default_route_interface(proc_root: &Path) -> io::Result<String> {
     let text = fs::read_to_string(proc_root.join("net/route"))?;
-    parse_default_route(&text).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::NotFound, "no default route interface found")
-    })
+    parse_default_route(&text)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no default route interface found"))
 }
 
 struct Sampler {
@@ -199,7 +194,10 @@ async fn scheduler(
         } else {
             configured_iface
         };
-        let needs_baseline = sampler.as_ref().map(|active| active.iface != iface).unwrap_or(true);
+        let needs_baseline = sampler
+            .as_ref()
+            .map(|active| active.iface != iface)
+            .unwrap_or(true);
         if needs_baseline {
             match Sampler::new(&iface, &proc_root) {
                 Ok(active) => sampler = Some(active),

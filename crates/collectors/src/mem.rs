@@ -68,7 +68,10 @@ mod tests {
     #[test]
     fn include_cache_switches_to_mem_free() {
         let input = "MemTotal: 1000 kB\nMemAvailable: 250 kB\nMemFree: 100 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n";
-        assert_eq!(parse_meminfo_with_mode(input, false).unwrap().used_pct, 75.0);
+        assert_eq!(
+            parse_meminfo_with_mode(input, false).unwrap().used_pct,
+            75.0
+        );
         let cached = parse_meminfo_with_mode(input, true).unwrap();
         assert_eq!(cached.used_pct, 90.0);
         assert_eq!(cached.available, 102_400);

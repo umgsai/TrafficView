@@ -127,7 +127,9 @@ impl Daemon1 {
             .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
         let interfaces = self.state.read().await.interfaces.clone();
         if !config.active_interface.is_empty()
-            && !interfaces.iter().any(|iface| iface == &config.active_interface)
+            && !interfaces
+                .iter()
+                .any(|iface| iface == &config.active_interface)
         {
             return Err(zbus::fdo::Error::Failed(format!(
                 "configured interface {} does not exist",
@@ -380,7 +382,10 @@ fn required<'a>(
         .ok_or_else(|| anyhow::anyhow!("missing snapshot key: {key}"))
 }
 
-fn nested(dict: &HashMap<String, OwnedValue>, key: &str) -> anyhow::Result<HashMap<String, OwnedValue>> {
+fn nested(
+    dict: &HashMap<String, OwnedValue>,
+    key: &str,
+) -> anyhow::Result<HashMap<String, OwnedValue>> {
     Ok(required(dict, key)?.try_clone()?.try_into()?)
 }
 

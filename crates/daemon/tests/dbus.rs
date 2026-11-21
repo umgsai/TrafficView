@@ -164,7 +164,9 @@ async fn sample_signal_is_monotonic_and_missing_interface_is_rejected() {
 
     let error = proxy.set_active_interface("missing0").await.unwrap_err();
     assert!(
-        error.to_string().contains("org.freedesktop.DBus.Error.Failed"),
+        error
+            .to_string()
+            .contains("org.freedesktop.DBus.Error.Failed"),
         "unexpected error: {error}"
     );
     assert_eq!(proxy.active_interface().await.unwrap(), "");

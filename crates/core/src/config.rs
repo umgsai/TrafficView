@@ -5,8 +5,7 @@
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
-    env,
-    fmt, fs, io,
+    env, fmt, fs, io,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -310,7 +309,8 @@ impl ConfigStore {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "config.toml".into());
-        self.path.with_file_name(format!(".{name}.tmp.{}.{nonce}", std::process::id()))
+        self.path
+            .with_file_name(format!(".{name}.tmp.{}.{nonce}", std::process::id()))
     }
 }
 
