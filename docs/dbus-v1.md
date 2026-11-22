@@ -86,3 +86,13 @@ dbus-run-session -- cargo test -p trafficview-daemon --test dbus
 覆盖：必需键与嵌套签名、可选键省略、`temps`/`plugin` 空集合、属性读取、
 `SetInterval` 边界、`Sample` 的 `ts_ms` 单调、未知网卡拒绝、`SetOverlayVisible`
 触发 `ConfigChanged`。
+
+## M2 增量（非破坏）
+
+M2 没有新增 D-Bus 成员，也没有修改任何既有字段的名称、类型、单位或语义。
+
+- GNOME Shell 扩展、Plasma widget 与 waybar 输出都只消费 `GetSnapshot` 与 `Sample`。
+- `trafficview status --format waybar --allow-disconnected` 在 daemon 不可达时输出
+  `class="disconnected"` 的单行 JSON；这是 CLI 行为，不改变 D-Bus 错误语义。
+- 相反，daemon 暂停时 `GetSnapshot` 仍返回 `Failed("daemon is paused")`。
+
