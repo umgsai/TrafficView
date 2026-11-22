@@ -6,7 +6,7 @@ use std::{
 use futures_util::StreamExt;
 use tokio::{sync::Mutex, task::JoinHandle, time::timeout};
 use trafficview_core::config::ConfigStore;
-use zbus::zvariant::OwnedValue;
+use zbus::zvariant::{OwnedValue, Value};
 
 /// 两个测试共用同一个 session bus 名称，必须串行。
 static BUS_LOCK: Mutex<()> = Mutex::const_new(());
@@ -24,6 +24,8 @@ trait Daemon1 {
         iface_stable: &str,
     ) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn get_interface_details(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
+    fn get_config(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
+    fn update_config(&self, updates: HashMap<String, OwnedValue>) -> zbus::Result<()>;
     fn set_active_interface(&self, name: &str) -> zbus::Result<()>;
     fn set_interval(&self, ms: u32) -> zbus::Result<()>;
     fn pause(&self, paused: bool) -> zbus::Result<()>;
@@ -125,6 +127,10 @@ impl TestDaemon {
     async fn proxy(&self) -> zbus::Result<Daemon1Proxy<'_>> {
         Daemon1Proxy::new(&self.connection).await
     }
+
+    fn config_path(&self) -> std::path::PathBuf {
+        self._dir.path().join("config.toml")
+    }
 }
 
 impl Drop for TestDaemon {
@@ -139,6 +145,122 @@ fn net_dict(snapshot: &HashMap<String, OwnedValue>) -> HashMap<String, OwnedValu
         .expect("net is owned")
         .try_into()
         .expect("net is a{sv}")
+}
+
+fn u32_value(value: u32) -> OwnedValue {
+    OwnedValue::try_from(Value::from(value)).unwrap()
+}
+
+fn bool_value(value: bool) -> OwnedValue {
+    OwnedValue::try_from(Value::from(value)).unwrap()
+}
+
+fn plugins_value(enabled: bool) -> OwnedValue {
+    let mut map: HashMap<String, Value<'static>> = HashMap::new();
+    map.insert("enabled".into(), Value::from(enabled));
+    OwnedValue::try_from(Value::from(map)).unwrap()
+}
+
+fn history_value(days: u32) -> OwnedValue {
+    let mut map: HashMap<String, Value<'static>> = HashMap::new();
+    map.insert("retention_days".into(), Value::from(days));
+    OwnedValue::try_from(Value::from(map)).unwrap()
+}
+
+#[tokio::test]
+async fn config_api_round_trips_and_rejects_invalid_updates_atomically() {
+    let _guard = BUS_LOCK.lock().await;
+    let harness = TestDaemon::spawn().await.unwrap();
+    let proxy = harness.proxy().await.unwrap();
+
+    let config = proxy.get_config().await.unwrap();
+    assert_eq!(u32::try_from(&config["sample_interval_ms"]).unwrap(), 1000);
+    assert!(config.contains_key("overlay"));
+    assert!(config.contains_key("alerts"));
+    assert!(config.contains_key("history"));
+
+    proxy
+        .update_config(HashMap::from([
+            ("sample_interval_ms".into(), u32_value(1500)),
+            ("memory_include_cache".into(), bool_value(true)),
+        ]))
+        .await
+        .unwrap();
+    let after = proxy.get_config().await.unwrap();
+    assert_eq!(u32::try_from(&after["sample_interval_ms"]).unwrap(), 1500);
+    assert!(bool::try_from(&after["memory_include_cache"]).unwrap());
+
+    // 同一批更新里既有合法也有非法字段：整个事务必须回滚。
+    let error = proxy
+        .update_config(HashMap::from([
+            ("sample_interval_ms".into(), u32_value(100)),
+            ("plugins".into(), plugins_value(false)),
+        ]))
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("org.freedesktop.DBus.Error.InvalidArgs"),
+        "unexpected error: {error}"
+    );
+    let after_error = proxy.get_config().await.unwrap();
+    assert_eq!(
+        u32::try_from(&after_error["sample_interval_ms"]).unwrap(),
+        1500
+    );
+    let plugins: HashMap<String, OwnedValue> = after_error["plugins"]
+        .try_clone()
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert!(
+        bool::try_from(&plugins["enabled"]).unwrap(),
+        "invalid batch must not flip plugins.enabled"
+    );
+
+    // 磁盘上的配置同样没有半写状态。
+    let saved = ConfigStore::at(harness.config_path()).load().unwrap();
+    assert_eq!(saved.sample_interval_ms, 1500);
+    assert!(saved.memory_include_cache);
+    assert!(saved.plugins.enabled);
+
+    assert!(
+        proxy
+            .update_config(HashMap::from([("unknown_key".into(), u32_value(1))]))
+            .await
+            .is_err(),
+        "unknown keys must be rejected"
+    );
+}
+
+#[tokio::test]
+async fn concurrent_config_updates_do_not_lose_fields() {
+    let _guard = BUS_LOCK.lock().await;
+    let harness = TestDaemon::spawn().await.unwrap();
+    let proxy_a = harness.proxy().await.unwrap();
+    let connection_b = zbus::Connection::session().await.unwrap();
+    let proxy_b = Daemon1Proxy::new(&connection_b).await.unwrap();
+
+    let (first, second) = tokio::join!(
+        proxy_a.update_config(HashMap::from([(
+            "memory_include_cache".into(),
+            bool_value(true),
+        )])),
+        proxy_b.update_config(HashMap::from([("history".into(), history_value(30))])),
+    );
+    first.unwrap();
+    second.unwrap();
+
+    let config = proxy_a.get_config().await.unwrap();
+    assert!(bool::try_from(&config["memory_include_cache"]).unwrap());
+    let history: HashMap<String, OwnedValue> =
+        config["history"].try_clone().unwrap().try_into().unwrap();
+    assert_eq!(u32::try_from(&history["retention_days"]).unwrap(), 30);
+
+    let saved = ConfigStore::at(harness.config_path()).load().unwrap();
+    assert!(saved.memory_include_cache);
+    assert_eq!(saved.history.retention_days, 30);
 }
 
 #[tokio::test]

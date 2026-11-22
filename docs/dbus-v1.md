@@ -174,6 +174,26 @@ GPU 后端优先 NVML，失败回退 `nvidia-smi`；AMD 用 `gpu_busy_percent`�
 |---|---|---|
 | `CollectorStatus` | `a{sv}` | 键为采集器名（`disk/temps/battery/filesystems/uptime/cpufreq/loadavg`），值为 `a{sv}`：`available b, reason s`；区分“零值”与“不可用” |
 
+### 配置读写（M4）
+
+| 名称 | 签名 | 语义 |
+|---|---|---|
+| `GetConfig` | `() -> a{sv}` | 完整配置；键与 `UpdateConfig` 对称 |
+| `UpdateConfig` | `a{sv} -> ()` | 按顶层键部分更新；在副本上合并并完整校验，原子保存成功后才提交 |
+
+顶层键：`sample_interval_ms u`、`active_interface s`、`memory_include_cache b`、
+`interface_blacklist as`、`interface_whitelist as`、`network_smoothing s`
+（`none|moving_average_3|ema`）、`theme s`（`auto|light|dark`）、`history a{sv}`
+（`retention_days u, timezone s`）、`alerts a{sv}`（`rules av`，每项
+`enabled b, metric s, op s, threshold d, duration_s u, cooldown_s u,
+quiet_hours s, level s`）、`overlay a{sv}`（`visible b, position ai, opacity d,
+click_through b, always_on_top b, skin s, units s, items av`，每项
+`id/label/unit/format/color s, visible b`）、`plugins a{sv}`（`enabled b`）。
+
+顶层缺失键保持不变；嵌套小节按键合并；`rules`/`items` 数组整体替换。
+未知键、类型错误、`Config::validate` 失败或配置的网卡不存在均返回 `InvalidArgs`，
+且不修改内存与磁盘。成功更新后广播 `ConfigChanged`。设置界面不得直接写配置文件。
+
 ### `plugin` 快照键与插件宿主（M4 Task 3）
 
 `plugin` 保持 `a{ss}`，键为 `<plugin-id>.<item-id>`，值为插件上报的原始字符串。

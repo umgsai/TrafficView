@@ -296,7 +296,7 @@ git commit -m "feat: add optional privileged per-process network metrics"
 - Create: `frontends/settings/src/dbus.rs`
 - Modify: `crates/daemon/src/dbus.rs`
 
-- [ ] **Step 1: 先增加配置 API 契约失败测试**
+- [x] **Step 1: 先增加配置 API 契约失败测试**
 
 D-Bus 增加 `GetConfig() -> a{sv}` 和 `UpdateConfig(a{sv})`；Update 必须在 daemon 内完整校验后原子保存并广播 ConfigChanged，任一字段非法时整个更新不生效。测试两个客户端并发写不同字段不会产生部分 TOML，settings 不得直接写 daemon 配置文件。
 
@@ -395,3 +395,15 @@ Task 3 已完成并以真实输出验证：
   `net/cpu/mem/disk/filesystems` 仍正常输出，D-Bus 未被阻塞。
 - 未实测边界：没有真实第三方插件二进制，全部用 `/bin/sh` fixture；插件宿主
   仅面向 Linux。P95 插件长尾延迟与真实插件生态兼容性待后续版本验证。
+
+Task 5 Step 1 已完成（仅配置 API；GTK 窗口未开始）：
+
+- 新增 `GetConfig() -> a{sv}` 与 `UpdateConfig(a{sv})`，覆盖全部 v1 配置字段；
+  顶层部分更新、嵌套小节按键合并、`rules/items` 数组整体替换。
+- `UpdateConfig` 在副本上合并并调用 `Config::validate`，再校验网卡存在性；
+  持写锁原子保存配置后才提交内存状态，失败时内存与磁盘都不变。
+- 新增 2 项 daemon 单元测试（完整往返、未知键拒绝）与 2 项 D-Bus 集成测试：
+  非法批次整体回滚、两个连接并发写不同字段不丢字段且 TOML 可重新解析。
+- `dbus-run-session -- cargo test -p trafficview-daemon` 通过；
+  `cargo clippy -p trafficview-daemon --all-targets -- -D warnings` 通过。
+- 只修改配置 API 与文档；`frontends/settings` 尚未创建，GTK 依赖未引入。

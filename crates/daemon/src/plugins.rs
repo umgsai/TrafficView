@@ -248,9 +248,13 @@ pub fn run_plugin_once(
     }
 
     let received = rx.recv_timeout(timeout);
-    // 协议为一次请求一帧：无论结果如何都回收子进程，避免僵尸与残留。
-    let _ = child.kill();
-    let status = child.wait().ok();
+    // 协议为一次请求一帧：优先保留真实退出码；仅在插件仍存活时 kill，
+    // 避免把已经正常退出的子进程误报为被信号终止。
+    let mut status = child.try_wait().ok().flatten();
+    if status.is_none() {
+        let _ = child.kill();
+        status = child.wait().ok();
+    }
     join_thread(stdout_thread);
     join_thread(stderr_thread);
 

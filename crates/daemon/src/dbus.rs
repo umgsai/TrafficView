@@ -11,7 +11,11 @@ use chrono::Utc;
 use tokio::sync::RwLock;
 use tracing::warn;
 use trafficview_core::{
-    config::{ConfigStore, SAMPLE_INTERVAL_MAX_MS, SAMPLE_INTERVAL_MIN_MS},
+    config::{
+        AlertRule, AlertsConfig, Config, ConfigStore, DisplayItem, HistoryConfig, NetworkSmoothing,
+        OverlayConfig, PluginsConfig, RateUnit, ThemeMode, SAMPLE_INTERVAL_MAX_MS,
+        SAMPLE_INTERVAL_MIN_MS,
+    },
     BatterySample, CpuSample, DiskSample, FilesystemSample, GpuSample, InterfaceInfo, MemSample,
     NetSample, Snapshot, TempSample, TrafficSummary,
 };
@@ -82,6 +86,53 @@ impl Daemon1 {
                 (name.clone(), owned(Value::from(entry)))
             })
             .collect()
+    }
+
+    /// M4 新增：完整配置快照；键与 `UpdateConfig` 对称。
+    async fn get_config(&self) -> HashMap<String, OwnedValue> {
+        config_to_dbus(&self.state.read().await.config)
+    }
+
+    /// M4 新增：按顶层键部分更新。先在副本上合并并校验，保存成功后才提交；
+    /// 任一字段非法时整体不生效。设置界面不得直接写配置文件。
+    async fn update_config(
+        &self,
+        #[zbus(signal_context)] context: SignalContext<'_>,
+        updates: HashMap<String, OwnedValue>,
+    ) -> zbus::fdo::Result<()> {
+        let mut state = self.state.write().await;
+        let mut config = state.config.clone();
+        apply_config_update(&mut config, &updates).map_err(zbus::fdo::Error::InvalidArgs)?;
+        config.validate().map_err(zbus::fdo::Error::InvalidArgs)?;
+        if !config.active_interface.is_empty()
+            && !state
+                .interfaces
+                .iter()
+                .any(|iface| iface == &config.active_interface)
+        {
+            return Err(zbus::fdo::Error::InvalidArgs(format!(
+                "configured interface {} does not exist",
+                config.active_interface
+            )));
+        }
+        // 持锁写盘：两个并发 UpdateConfig 不会产生部分 TOML 或交错状态。
+        if let Err(error) = self.store.save(&config) {
+            return Err(zbus::fdo::Error::Failed(error.to_string()));
+        }
+        let rules = config.alerts.rules.clone();
+        let plugins_enabled = config.plugins.enabled;
+        state.config = config;
+        state.color_scheme = crate::theme::decide(state.config.theme, state.portal_scheme);
+        if let Ok(mut engine) = state.alerts.lock() {
+            engine.reload(&rules);
+        }
+        let supervisor = state.plugin_supervisor.clone();
+        drop(state);
+        if let Some(supervisor) = supervisor {
+            supervisor.reload(plugins_enabled);
+        }
+        let _ = Daemon1::config_changed(&context).await;
+        Ok(())
     }
 
     async fn get_snapshot(&self) -> zbus::fdo::Result<HashMap<String, OwnedValue>> {
@@ -632,6 +683,388 @@ fn gpu_from_dbus(dict: &HashMap<String, OwnedValue>) -> anyhow::Result<GpuSample
     })
 }
 
+// ---------------------------------------------------------------------------
+// M4 配置 API：`GetConfig`/`UpdateConfig` 的 a{sv} 映射。
+// 顶层键部分更新；嵌套小节按键合并；数组（rules/items）整体替换。
+// ---------------------------------------------------------------------------
+
+fn smoothing_name(value: NetworkSmoothing) -> &'static str {
+    match value {
+        NetworkSmoothing::None => "none",
+        NetworkSmoothing::MovingAverage3 => "moving_average_3",
+        NetworkSmoothing::Ema => "ema",
+    }
+}
+
+fn theme_name(value: ThemeMode) -> &'static str {
+    match value {
+        ThemeMode::Auto => "auto",
+        ThemeMode::Light => "light",
+        ThemeMode::Dark => "dark",
+    }
+}
+
+fn unit_name(value: RateUnit) -> &'static str {
+    match value {
+        RateUnit::Bytes => "bytes",
+        RateUnit::Bits => "bits",
+    }
+}
+
+/// 完整配置导出；与 `apply_config_update` 的键一一对应。
+pub fn config_to_dbus(config: &Config) -> HashMap<String, OwnedValue> {
+    let mut top: HashMap<String, OwnedValue> = HashMap::new();
+    top.insert(
+        "sample_interval_ms".into(),
+        owned(Value::from(config.sample_interval_ms)),
+    );
+    top.insert(
+        "active_interface".into(),
+        owned(Value::from(config.active_interface.clone())),
+    );
+    top.insert(
+        "memory_include_cache".into(),
+        owned(Value::from(config.memory_include_cache)),
+    );
+    top.insert(
+        "interface_blacklist".into(),
+        owned(Value::from(config.interface_blacklist.clone())),
+    );
+    top.insert(
+        "interface_whitelist".into(),
+        owned(Value::from(config.interface_whitelist.clone())),
+    );
+    top.insert(
+        "network_smoothing".into(),
+        owned(Value::from(smoothing_name(config.network_smoothing))),
+    );
+    top.insert("theme".into(), owned(Value::from(theme_name(config.theme))));
+    top.insert("history".into(), owned(history_value(&config.history)));
+    top.insert("alerts".into(), owned(alerts_value(&config.alerts)));
+    top.insert("overlay".into(), owned(overlay_value(&config.overlay)));
+    top.insert("plugins".into(), owned(plugins_value(&config.plugins)));
+    top
+}
+
+fn history_value(config: &HistoryConfig) -> Value<'static> {
+    let mut map: HashMap<String, Value<'static>> = HashMap::new();
+    map.insert("retention_days".into(), Value::from(config.retention_days));
+    map.insert("timezone".into(), Value::from(config.timezone.clone()));
+    Value::from(map)
+}
+
+fn alerts_value(config: &AlertsConfig) -> Value<'static> {
+    let rules = config
+        .rules
+        .iter()
+        .map(|rule| {
+            let mut map: HashMap<String, Value<'static>> = HashMap::new();
+            map.insert("enabled".into(), Value::from(rule.enabled));
+            map.insert("metric".into(), Value::from(rule.metric.clone()));
+            map.insert("op".into(), Value::from(rule.op.clone()));
+            map.insert("threshold".into(), Value::from(rule.threshold));
+            map.insert("duration_s".into(), Value::from(rule.duration_s));
+            map.insert("cooldown_s".into(), Value::from(rule.cooldown_s));
+            map.insert("quiet_hours".into(), Value::from(rule.quiet_hours.clone()));
+            map.insert("level".into(), Value::from(rule.level.clone()));
+            Value::from(map)
+        })
+        .collect::<Vec<Value<'static>>>();
+    let mut map: HashMap<String, Value<'static>> = HashMap::new();
+    map.insert("rules".into(), Value::from(rules));
+    Value::from(map)
+}
+
+fn overlay_value(config: &OverlayConfig) -> Value<'static> {
+    let items = config
+        .items
+        .iter()
+        .map(|item| {
+            let mut map: HashMap<String, Value<'static>> = HashMap::new();
+            map.insert("id".into(), Value::from(item.id.clone()));
+            map.insert("label".into(), Value::from(item.label.clone()));
+            map.insert("unit".into(), Value::from(item.unit.clone()));
+            map.insert("format".into(), Value::from(item.format.clone()));
+            map.insert("color".into(), Value::from(item.color.clone()));
+            map.insert("visible".into(), Value::from(item.visible));
+            Value::from(map)
+        })
+        .collect::<Vec<Value<'static>>>();
+    let mut map: HashMap<String, Value<'static>> = HashMap::new();
+    map.insert("visible".into(), Value::from(config.visible));
+    map.insert("position".into(), Value::from(config.position.to_vec()));
+    map.insert("opacity".into(), Value::from(f64::from(config.opacity)));
+    map.insert("click_through".into(), Value::from(config.click_through));
+    map.insert("always_on_top".into(), Value::from(config.always_on_top));
+    map.insert("skin".into(), Value::from(config.skin.clone()));
+    map.insert("units".into(), Value::from(unit_name(config.units)));
+    map.insert("items".into(), Value::from(items));
+    Value::from(map)
+}
+
+fn plugins_value(config: &PluginsConfig) -> Value<'static> {
+    let mut map: HashMap<String, Value<'static>> = HashMap::new();
+    map.insert("enabled".into(), Value::from(config.enabled));
+    Value::from(map)
+}
+
+fn cloned(value: &OwnedValue, path: &str) -> Result<OwnedValue, String> {
+    value
+        .try_clone()
+        .map_err(|error| format!("{path}: cannot clone value: {error}"))
+}
+
+fn as_u32(value: OwnedValue, path: &str) -> Result<u32, String> {
+    u32::try_from(value).map_err(|error| format!("{path}: expected u32: {error}"))
+}
+
+fn as_f64(value: OwnedValue, path: &str) -> Result<f64, String> {
+    f64::try_from(value).map_err(|error| format!("{path}: expected f64: {error}"))
+}
+
+fn as_bool(value: OwnedValue, path: &str) -> Result<bool, String> {
+    bool::try_from(value).map_err(|error| format!("{path}: expected bool: {error}"))
+}
+
+fn as_string(value: OwnedValue, path: &str) -> Result<String, String> {
+    String::try_from(value).map_err(|error| format!("{path}: expected string: {error}"))
+}
+
+fn as_strings(value: OwnedValue, path: &str) -> Result<Vec<String>, String> {
+    Vec::<String>::try_from(value).map_err(|error| format!("{path}: expected as: {error}"))
+}
+
+fn as_map(value: OwnedValue, path: &str) -> Result<HashMap<String, OwnedValue>, String> {
+    value
+        .try_into()
+        .map_err(|error| format!("{path}: expected a{{sv}}: {error}"))
+}
+
+fn as_variants(value: OwnedValue, path: &str) -> Result<Vec<HashMap<String, OwnedValue>>, String> {
+    let entries = Vec::<OwnedValue>::try_from(value)
+        .map_err(|error| format!("{path}: expected av: {error}"))?;
+    entries
+        .into_iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            HashMap::<String, OwnedValue>::try_from(entry)
+                .map_err(|error| format!("{path}[{index}]: expected a{{sv}}: {error}"))
+        })
+        .collect()
+}
+
+fn parse_smoothing(value: &str) -> Result<NetworkSmoothing, String> {
+    match value {
+        "none" => Ok(NetworkSmoothing::None),
+        "moving_average_3" | "moving_average3" => Ok(NetworkSmoothing::MovingAverage3),
+        "ema" => Ok(NetworkSmoothing::Ema),
+        other => Err(format!(
+            "network_smoothing '{other}' must be none, moving_average_3 or ema"
+        )),
+    }
+}
+
+fn parse_theme(value: &str) -> Result<ThemeMode, String> {
+    match value {
+        "auto" => Ok(ThemeMode::Auto),
+        "light" => Ok(ThemeMode::Light),
+        "dark" => Ok(ThemeMode::Dark),
+        other => Err(format!("theme '{other}' must be auto, light or dark")),
+    }
+}
+
+fn parse_units(value: &str) -> Result<RateUnit, String> {
+    match value {
+        "bytes" => Ok(RateUnit::Bytes),
+        "bits" => Ok(RateUnit::Bits),
+        other => Err(format!("overlay.units '{other}' must be bytes or bits")),
+    }
+}
+
+fn as_position(value: OwnedValue, path: &str) -> Result<[i32; 2], String> {
+    let values =
+        Vec::<i32>::try_from(value).map_err(|error| format!("{path}: expected ai: {error}"))?;
+    let [x, y] = values.as_slice() else {
+        return Err(format!("{path}: expected exactly 2 integers"));
+    };
+    Ok([*x, *y])
+}
+
+/// 在 `config` 副本上合并顶层部分更新；未知键或类型错误返回可展示原因。
+pub fn apply_config_update(
+    config: &mut Config,
+    updates: &HashMap<String, OwnedValue>,
+) -> Result<(), String> {
+    for (key, value) in updates {
+        match key.as_str() {
+            "sample_interval_ms" => {
+                config.sample_interval_ms = as_u32(cloned(value, key)?, key)?;
+            }
+            "active_interface" => {
+                config.active_interface = as_string(cloned(value, key)?, key)?;
+            }
+            "memory_include_cache" => {
+                config.memory_include_cache = as_bool(cloned(value, key)?, key)?;
+            }
+            "interface_blacklist" => {
+                config.interface_blacklist = as_strings(cloned(value, key)?, key)?;
+            }
+            "interface_whitelist" => {
+                config.interface_whitelist = as_strings(cloned(value, key)?, key)?;
+            }
+            "network_smoothing" => {
+                let text = as_string(cloned(value, key)?, key)?;
+                config.network_smoothing = parse_smoothing(&text)?;
+            }
+            "theme" => {
+                let text = as_string(cloned(value, key)?, key)?;
+                config.theme = parse_theme(&text)?;
+            }
+            "history" => {
+                let map = as_map(cloned(value, key)?, key)?;
+                apply_history(&mut config.history, &map)?;
+            }
+            "alerts" => {
+                let map = as_map(cloned(value, key)?, key)?;
+                apply_alerts(&mut config.alerts, &map)?;
+            }
+            "overlay" => {
+                let map = as_map(cloned(value, key)?, key)?;
+                apply_overlay(&mut config.overlay, &map)?;
+            }
+            "plugins" => {
+                let map = as_map(cloned(value, key)?, key)?;
+                apply_plugins(&mut config.plugins, &map)?;
+            }
+            other => return Err(format!("unknown config key '{other}'")),
+        }
+    }
+    Ok(())
+}
+
+fn apply_history(
+    config: &mut HistoryConfig,
+    map: &HashMap<String, OwnedValue>,
+) -> Result<(), String> {
+    for (key, value) in map {
+        let path = format!("history.{key}");
+        match key.as_str() {
+            "retention_days" => config.retention_days = as_u32(cloned(value, &path)?, &path)?,
+            "timezone" => config.timezone = as_string(cloned(value, &path)?, &path)?,
+            other => return Err(format!("unknown config key 'history.{other}'")),
+        }
+    }
+    Ok(())
+}
+
+fn apply_alerts(
+    config: &mut AlertsConfig,
+    map: &HashMap<String, OwnedValue>,
+) -> Result<(), String> {
+    for (key, value) in map {
+        match key.as_str() {
+            "rules" => {
+                let entries = as_variants(cloned(value, "alerts.rules")?, "alerts.rules")?;
+                let rules = entries
+                    .iter()
+                    .enumerate()
+                    .map(|(index, entry)| rule_from_dbus(entry, index))
+                    .collect::<Result<Vec<AlertRule>, String>>()?;
+                config.rules = rules;
+            }
+            other => return Err(format!("unknown config key 'alerts.{other}'")),
+        }
+    }
+    Ok(())
+}
+
+fn rule_from_dbus(entry: &HashMap<String, OwnedValue>, index: usize) -> Result<AlertRule, String> {
+    let mut rule = AlertRule::default();
+    let path = format!("alerts.rules[{index}]");
+    for (key, value) in entry {
+        let field = format!("{path}.{key}");
+        match key.as_str() {
+            "enabled" => rule.enabled = as_bool(cloned(value, &field)?, &field)?,
+            "metric" => rule.metric = as_string(cloned(value, &field)?, &field)?,
+            "op" => rule.op = as_string(cloned(value, &field)?, &field)?,
+            "threshold" => rule.threshold = as_f64(cloned(value, &field)?, &field)?,
+            "duration_s" => rule.duration_s = as_u32(cloned(value, &field)?, &field)?,
+            "cooldown_s" => rule.cooldown_s = as_u32(cloned(value, &field)?, &field)?,
+            "quiet_hours" => rule.quiet_hours = as_string(cloned(value, &field)?, &field)?,
+            "level" => rule.level = as_string(cloned(value, &field)?, &field)?,
+            other => return Err(format!("unknown config key '{path}.{other}'")),
+        }
+    }
+    Ok(rule)
+}
+
+fn apply_overlay(
+    config: &mut OverlayConfig,
+    map: &HashMap<String, OwnedValue>,
+) -> Result<(), String> {
+    for (key, value) in map {
+        let path = format!("overlay.{key}");
+        match key.as_str() {
+            "visible" => config.visible = as_bool(cloned(value, &path)?, &path)?,
+            "position" => config.position = as_position(cloned(value, &path)?, &path)?,
+            "opacity" => config.opacity = as_f64(cloned(value, &path)?, &path)? as f32,
+            "click_through" => config.click_through = as_bool(cloned(value, &path)?, &path)?,
+            "always_on_top" => config.always_on_top = as_bool(cloned(value, &path)?, &path)?,
+            "skin" => config.skin = as_string(cloned(value, &path)?, &path)?,
+            "units" => {
+                let text = as_string(cloned(value, &path)?, &path)?;
+                config.units = parse_units(&text)?;
+            }
+            "items" => {
+                let entries = as_variants(cloned(value, "overlay.items")?, "overlay.items")?;
+                let items = entries
+                    .iter()
+                    .enumerate()
+                    .map(|(index, entry)| item_from_dbus(entry, index))
+                    .collect::<Result<Vec<DisplayItem>, String>>()?;
+                config.items = items;
+            }
+            other => return Err(format!("unknown config key 'overlay.{other}'")),
+        }
+    }
+    Ok(())
+}
+
+fn item_from_dbus(
+    entry: &HashMap<String, OwnedValue>,
+    index: usize,
+) -> Result<DisplayItem, String> {
+    let mut item = DisplayItem::default();
+    let path = format!("overlay.items[{index}]");
+    for (key, value) in entry {
+        let field = format!("{path}.{key}");
+        match key.as_str() {
+            "id" => item.id = as_string(cloned(value, &field)?, &field)?,
+            "label" => item.label = as_string(cloned(value, &field)?, &field)?,
+            "unit" => item.unit = as_string(cloned(value, &field)?, &field)?,
+            "format" => item.format = as_string(cloned(value, &field)?, &field)?,
+            "color" => item.color = as_string(cloned(value, &field)?, &field)?,
+            "visible" => item.visible = as_bool(cloned(value, &field)?, &field)?,
+            other => return Err(format!("unknown config key '{path}.{other}'")),
+        }
+    }
+    Ok(item)
+}
+
+fn apply_plugins(
+    config: &mut PluginsConfig,
+    map: &HashMap<String, OwnedValue>,
+) -> Result<(), String> {
+    for (key, value) in map {
+        let path = format!("plugins.{key}");
+        match key.as_str() {
+            "enabled" => config.enabled = as_bool(cloned(value, &path)?, &path)?,
+            other => return Err(format!("unknown config key 'plugins.{other}'")),
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -709,5 +1142,36 @@ mod tests {
         for key in ["filesystems", "battery", "uptime_s"] {
             assert!(dict.contains_key(key), "{key}");
         }
+    }
+
+    #[test]
+    fn config_round_trips_through_dbus_dict() {
+        let config = Config::default();
+        let dict = config_to_dbus(&config);
+        let mut decoded = Config::default();
+        apply_config_update(&mut decoded, &dict).unwrap();
+        assert_eq!(decoded, config);
+    }
+
+    #[test]
+    fn partial_config_update_merges_and_rejects_unknown_keys() {
+        let mut config = Config::default();
+        let updates: HashMap<String, OwnedValue> = HashMap::from([
+            ("memory_include_cache".into(), owned(Value::from(true))),
+            (
+                "plugins".into(),
+                owned(plugins_value(&PluginsConfig { enabled: false })),
+            ),
+        ]);
+        apply_config_update(&mut config, &updates).unwrap();
+        assert!(config.memory_include_cache);
+        assert!(!config.plugins.enabled);
+        assert_eq!(config.sample_interval_ms, 1000);
+        let error = apply_config_update(
+            &mut config,
+            &HashMap::from([("unknown_key".to_string(), owned(Value::from(1u32)))]),
+        )
+        .unwrap_err();
+        assert!(error.contains("unknown config key"));
     }
 }
