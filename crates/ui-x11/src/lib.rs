@@ -137,6 +137,12 @@ async fn dbus_loop(
         .context("cannot subscribe to the Alert signal")?;
     let mut alerts = trafficview_render::AlertState::default();
     let mut last_snapshot: Option<Snapshot> = None;
+    // daemon 退出时 Sample 流不会自动结束，需要主动探测服务名是否仍被持有；
+    // 否则 daemon/托盘退出后悬浮窗进程与窗口会一直残留。
+    let bus = zbus::fdo::DBusProxy::new(&connection)
+        .await
+        .context("cannot query the session bus")?;
+    let mut health = tokio::time::interval(Duration::from_secs(2));
     loop {
         tokio::select! {
             signal = stream.next() => {
@@ -175,6 +181,15 @@ async fn dbus_loop(
                     if let Some(snapshot) = &last_snapshot {
                         send_frame(&mut skin_renderer, &config, dpi, scheme, snapshot, &alerts, &frames)?;
                     }
+                }
+            }
+            _ = health.tick() => {
+                let owned = match zbus::names::BusName::try_from("com.trafficview.Daemon1") {
+                    Ok(name) => bus.name_has_owner(name).await.unwrap_or(false),
+                    Err(_) => false,
+                };
+                if !owned {
+                    break;
                 }
             }
         }
@@ -582,12 +597,19 @@ fn x11_loop(config: Config, frames: Receiver<FrameUpdate>, store: Option<ConfigS
             break;
         }
         let mut drew = false;
-        while let Ok(update) = frames.try_recv() {
-            if let Err(error) = context.draw(&update) {
-                eprintln!("overlay: cannot submit a frame: {error:#}");
-                return;
+        loop {
+            match frames.try_recv() {
+                Ok(update) => {
+                    if let Err(error) = context.draw(&update) {
+                        eprintln!("overlay: cannot submit a frame: {error:#}");
+                        return;
+                    }
+                    drew = true;
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                // D-Bus 循环已退出（daemon 退出或断连）：关闭悬浮窗，否则进程和窗口会一直残留。
+                Err(mpsc::TryRecvError::Disconnected) => return,
             }
-            drew = true;
         }
         if !drew {
             thread::sleep(Duration::from_millis(10));
