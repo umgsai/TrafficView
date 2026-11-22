@@ -1,0 +1,7 @@
+{
+  "uuid": "trafficview@trafficview.local",
+  "name": "TrafficView",
+  "description": "Network, CPU and memory from trafficviewd over D-Bus v1.",
+  "shell-version": ["45", "46", "47", "48"],
+  "version": 1
+}

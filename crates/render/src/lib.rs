@@ -1,14 +1,23 @@
 //! 平台无关的固定布局 ARGB 渲染。96 DPI 为基准，输出 BGRA 预乘字节。
 
+pub mod nine_patch;
+pub mod skin;
+pub mod value;
+
 use std::sync::{Mutex, OnceLock};
 
-use cosmic_text::{Attrs, Buffer, Color as TextColor, FontSystem, Metrics, Shaping, SwashCache};
-use tiny_skia::{Color, Paint, PathBuilder, Pixmap, Rect, Transform};
+use cosmic_text::{
+    Attrs, Buffer, Color as TextColor, Family, FontSystem, Metrics, Shaping, SwashCache,
+};
+use tiny_skia::{Color, Paint, PathBuilder, Pixmap, PixmapPaint, Rect, Transform};
 use trafficview_core::{
     config::{Config, DisplayItem},
     format::format_rate,
     Snapshot,
 };
+
+pub use skin::{Skin, SkinError};
+pub use value::{display_value, is_known_id, numeric_value};
 
 pub const BASE_DPI: u32 = 96;
 const ROW_HEIGHT: f32 = 24.0;
@@ -52,6 +61,264 @@ pub struct RenderedFrame {
     pub argb: Vec<u8>,
     pub cache_key: String,
     pub regions: Vec<HitRegion>,
+}
+
+/// 皮肤渲染器。相同显示值 + 相同皮肤 + 相同缩放不会重复栅格化。
+pub struct Renderer {
+    skin: Skin,
+    background: Option<Pixmap>,
+    last_key: Option<String>,
+    last_frame: Option<RenderedFrame>,
+    rasterize_count: u64,
+}
+
+impl Renderer {
+    pub fn new(skin: Skin) -> Result<Self, SkinError> {
+        let background = match &skin.background_path {
+            Some(path) => Some(Pixmap::load_png(path).map_err(|error| {
+                SkinError::Invalid(format!(
+                    "cannot decode background '{}': {error}",
+                    path.display()
+                ))
+            })?),
+            None => None,
+        };
+        if let Some(insets) = skin.canvas.nine_patch {
+            let Some(background) = &background else {
+                return Err(SkinError::Invalid(
+                    "nine_patch requires a background PNG".into(),
+                ));
+            };
+            nine_patch::validate_insets(background.width(), background.height(), insets)
+                .map_err(SkinError::Invalid)?;
+        }
+        Ok(Self {
+            skin,
+            background,
+            last_key: None,
+            last_frame: None,
+            rasterize_count: 0,
+        })
+    }
+
+    pub fn skin(&self) -> &Skin {
+        &self.skin
+    }
+
+    /// 实际栅格化次数；缓存命中不增加。
+    pub fn rasterize_count(&self) -> u64 {
+        self.rasterize_count
+    }
+
+    pub fn render(&mut self, snapshot: &Snapshot, scale: f32) -> Result<RenderedFrame, SkinError> {
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+        let key = self.cache_key(snapshot, scale);
+        if self.last_key.as_deref() == Some(key.as_str()) {
+            if let Some(frame) = &self.last_frame {
+                return Ok(frame.clone());
+            }
+        }
+        let frame = self.rasterize(snapshot, scale)?;
+        self.last_key = Some(key);
+        self.last_frame = Some(frame.clone());
+        self.rasterize_count += 1;
+        Ok(frame)
+    }
+
+    fn cache_key(&self, snapshot: &Snapshot, scale: f32) -> String {
+        let mut key = format!(
+            "{:016x}:{scale:.4}:{:.3}:",
+            self.skin.content_hash, self.skin.canvas.opacity
+        );
+        for item in &self.skin.items {
+            key.push_str(&item.id);
+            key.push('=');
+            key.push_str(&value::display_value(
+                &item.id,
+                snapshot,
+                self.skin.canvas.units,
+                &item.format,
+            ));
+            key.push(',');
+        }
+        key
+    }
+
+    fn rasterize(&self, snapshot: &Snapshot, scale: f32) -> Result<RenderedFrame, SkinError> {
+        let width = ((self.skin.canvas.width as f32) * scale).round().max(1.0) as u32;
+        let height = ((self.skin.canvas.height as f32) * scale).round().max(1.0) as u32;
+        let mut pixmap = Pixmap::new(width, height)
+            .ok_or_else(|| SkinError::Invalid("canvas size must not be zero".into()))?;
+
+        if let Some(background) = &self.background {
+            let scaled = match self.skin.canvas.nine_patch {
+                Some(insets) => nine_patch::scale_nine_patch(background, insets, width, height)
+                    .map_err(SkinError::Invalid)?,
+                None => nine_patch::resize_nearest(background, width, height),
+            };
+            pixmap.draw_pixmap(
+                0,
+                0,
+                scaled.as_ref(),
+                &PixmapPaint::default(),
+                Transform::identity(),
+                None,
+            );
+        } else if let Some(color) = &self.skin.canvas.background_color {
+            let (r, g, b, a) = parse_color_rgba(color);
+            pixmap.fill(Color::from_rgba8(r, g, b, a));
+        }
+
+        let mut regions = Vec::with_capacity(self.skin.items.len());
+        let mut guard = context().lock().expect("render context poisoned");
+        let context = &mut *guard;
+        for item in &self.skin.items {
+            let [x, y, item_width, item_height] = item.rect;
+            let x = ((x as f32) * scale).round() as i32;
+            let y = ((y as f32) * scale).round() as i32;
+            let item_width = ((item_width as f32) * scale).round() as i32;
+            let item_height = ((item_height as f32) * scale).round() as i32;
+            regions.push(HitRegion {
+                x,
+                y,
+                width: item_width,
+                height: item_height,
+            });
+
+            let formatted =
+                value::display_value(&item.id, snapshot, self.skin.canvas.units, &item.format);
+            if formatted.is_empty() {
+                continue;
+            }
+            let text = if item.label.is_empty() {
+                formatted
+            } else {
+                format!("{} {}", item.label, formatted)
+            };
+            let color = match value::numeric_value(&item.id, snapshot) {
+                Some(value) => item.color_for(value),
+                None => item.color.clone(),
+            };
+            draw_item_text(
+                context,
+                &mut pixmap,
+                item,
+                &text,
+                &color,
+                scale,
+                (x, y, item_width, item_height),
+                &self.skin,
+            );
+        }
+        drop(guard);
+
+        let factor = (self.skin.canvas.opacity.clamp(0.0, 1.0) * 255.0).round() as u32;
+        if factor < 255 {
+            for byte in pixmap.data_mut() {
+                *byte = ((*byte as u32 * factor + 127) / 255) as u8;
+            }
+        }
+
+        let mut bgra = Vec::with_capacity(width as usize * height as usize * 4);
+        for pixel in pixmap.data().as_chunks::<4>().0 {
+            bgra.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
+        }
+        Ok(RenderedFrame {
+            width,
+            height,
+            argb: bgra,
+            cache_key: self.cache_key(snapshot, scale),
+            regions,
+        })
+    }
+}
+
+/// 将 `RenderedFrame`（BGRA 预乘）编码为 PNG 字节，供离屏预览使用。
+pub fn encode_png(frame: &RenderedFrame) -> Result<Vec<u8>, String> {
+    let mut pixmap = Pixmap::new(frame.width, frame.height)
+        .ok_or_else(|| "frame size must not be zero".to_string())?;
+    let (source_pixels, _) = frame.argb.as_chunks::<4>();
+    let (target_pixels, _) = pixmap.data_mut().as_chunks_mut::<4>();
+    for (source, target) in source_pixels.iter().zip(target_pixels.iter_mut()) {
+        target[0] = source[2];
+        target[1] = source[1];
+        target[2] = source[0];
+        target[3] = source[3];
+    }
+    pixmap.encode_png().map_err(|error| error.to_string())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_item_text(
+    context: &mut RenderContext,
+    pixmap: &mut Pixmap,
+    item: &skin::SkinItem,
+    text: &str,
+    color: &str,
+    scale: f32,
+    rect: (i32, i32, i32, i32),
+    skin: &Skin,
+) {
+    let (x, y, width, height) = rect;
+    let font_size = skin.font_size_for(item) * scale;
+    let mut buffer = Buffer::new(
+        &mut context.font_system,
+        Metrics::new(font_size, font_size * 1.4),
+    );
+    buffer.set_size(
+        &mut context.font_system,
+        Some(width as f32),
+        Some(height as f32),
+    );
+    let attrs = if item.mono {
+        Attrs::new().family(Family::Monospace)
+    } else {
+        Attrs::new().family(Family::Name(&skin.font.family))
+    };
+    buffer.set_text(&mut context.font_system, text, attrs, Shaping::Advanced);
+    let line_width = buffer
+        .layout_runs()
+        .map(|run| run.line_w)
+        .fold(0.0_f32, f32::max);
+    let offset_x = match item.align {
+        skin::Align::Left => 0.0,
+        skin::Align::Right => (width as f32 - line_width).max(0.0),
+        skin::Align::Center => ((width as f32 - line_width) / 2.0).max(0.0),
+    };
+    let offset_y = ((height as f32 - font_size * 1.4) / 2.0).max(0.0);
+    let x0 = x as f32 + offset_x;
+    let y0 = y as f32 + offset_y;
+    let (r, g, b, a) = parse_color_rgba(color);
+    buffer.draw(
+        &mut context.font_system,
+        &mut context.swash_cache,
+        TextColor::rgba(r, g, b, a),
+        |gx, gy, glyph_width, glyph_height, glyph_color| {
+            blend_glyph(
+                pixmap,
+                x0 as i32 + gx,
+                y0 as i32 + gy,
+                glyph_width,
+                glyph_height,
+                glyph_color,
+            );
+        },
+    );
+}
+
+fn parse_color_rgba(value: &str) -> (u8, u8, u8, u8) {
+    let (r, g, b) = parse_color(value);
+    let hex = value.trim_start_matches('#');
+    let a = if hex.len() == 8 {
+        u8::from_str_radix(&hex[6..8], 16).unwrap_or(255)
+    } else {
+        255
+    };
+    (r, g, b, a)
 }
 
 pub fn layout(items: &[DisplayItem], snapshot: &Snapshot, dpi: u32) -> Layout {

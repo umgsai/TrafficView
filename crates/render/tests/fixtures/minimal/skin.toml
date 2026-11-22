@@ -1,0 +1,28 @@
+[meta]
+name = "Minimal"
+author = "trafficview tests"
+version = "1"
+
+[canvas]
+width = 220
+height = 80
+background_color = "#101216"
+opacity = 0.9
+
+[font]
+family = "Sans"
+size = 14.0
+color = "#FFFFFF"
+
+[[item]]
+id = "net_up"
+rect = [10, 6, 92, 20]
+label = "↑"
+mono = true
+
+[[item]]
+id = "net_down"
+rect = [110, 6, 92, 20]
+label = "↓"
+align = "right"
+mono = true

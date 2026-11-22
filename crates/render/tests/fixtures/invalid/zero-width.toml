@@ -1,0 +1,10 @@
+[meta]
+name = "Zero width"
+
+[canvas]
+width = 100
+height = 40
+
+[[item]]
+id = "cpu"
+rect = [0, 0, 0, 20]

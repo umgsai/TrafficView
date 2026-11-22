@@ -84,6 +84,7 @@ pub fn run(config: Config) -> Result<()> {
 }
 
 async fn dbus_loop(config: Config, dpi: u32, frames: Sender<FrameUpdate>) -> Result<()> {
+    let mut skin_renderer = load_skin_renderer(&config)?;
     let connection = zbus::Connection::session()
         .await
         .context("cannot connect to the session bus; is trafficviewd running?")?;
@@ -97,7 +98,12 @@ async fn dbus_loop(config: Config, dpi: u32, frames: Sender<FrameUpdate>) -> Res
     while let Some(signal) = stream.next().await {
         let args = signal.args()?;
         let snapshot = trafficview_daemon::dbus::snapshot_from_dbus(&args.snapshot)?;
-        let frame = trafficview_render::render(&snapshot, &config, dpi);
+        let frame = match &mut skin_renderer {
+            Some(renderer) => renderer
+                .render(&snapshot, dpi as f32 / trafficview_render::BASE_DPI as f32)
+                .map_err(|error| anyhow::anyhow!(error))?,
+            None => trafficview_render::render(&snapshot, &config, dpi),
+        };
         if frames
             .send(FrameUpdate {
                 frame,
@@ -109,6 +115,20 @@ async fn dbus_loop(config: Config, dpi: u32, frames: Sender<FrameUpdate>) -> Res
         }
     }
     Ok(())
+}
+
+fn load_skin_renderer(config: &Config) -> Result<Option<trafficview_render::Renderer>> {
+    let path = config.overlay.skin.trim();
+    if path.is_empty() {
+        return Ok(None);
+    }
+    let skin = trafficview_render::skin::Skin::load(path)
+        .map_err(|error| anyhow::anyhow!(error))
+        .with_context(|| format!("cannot load skin {path}"))?;
+    let renderer = trafficview_render::Renderer::new(skin)
+        .map_err(|error| anyhow::anyhow!(error))
+        .context("cannot prepare skin renderer")?;
+    Ok(Some(renderer))
 }
 
 fn query_dpi() -> Option<u32> {

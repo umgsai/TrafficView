@@ -42,6 +42,15 @@ pub struct DisplayItem {
     pub visible: bool,
 }
 
+/// 速率显示单位。默认字节每秒，保持 M1 行为。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RateUnit {
+    #[default]
+    Bytes,
+    Bits,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OverlayConfig {
@@ -50,6 +59,9 @@ pub struct OverlayConfig {
     pub opacity: f32,
     pub click_through: bool,
     pub always_on_top: bool,
+    /// 原生皮肤目录；空字符串使用内置固定布局。
+    pub skin: String,
+    pub units: RateUnit,
     pub items: Vec<DisplayItem>,
 }
 
@@ -80,6 +92,8 @@ impl Default for OverlayConfig {
             opacity: 0.9,
             click_through: false,
             always_on_top: true,
+            skin: String::new(),
+            units: RateUnit::Bytes,
             items: default_items(),
         }
     }
@@ -325,6 +339,8 @@ mod tests {
         assert_eq!(cfg.active_interface, "");
         assert!(cfg.overlay.visible);
         assert_eq!(cfg.overlay.opacity, 0.9);
+        assert_eq!(cfg.overlay.units, RateUnit::Bytes);
+        assert!(cfg.overlay.skin.is_empty());
     }
 
     #[test]
