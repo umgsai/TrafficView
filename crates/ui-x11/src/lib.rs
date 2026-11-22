@@ -108,7 +108,16 @@ async fn dbus_loop(
     frames: Sender<FrameUpdate>,
     store: Option<ConfigStore>,
 ) -> Result<()> {
-    let mut skin_renderer = load_skin_renderer(&config)?;
+    // 皮肤路径无效时降级为默认皮肤并保留说明，不能因此让整个悬浮窗退出。
+    let mut skin_renderer = match load_skin_renderer(&config) {
+        Ok(renderer) => renderer,
+        Err(error) => {
+            eprintln!(
+                "overlay: cannot load the configured skin, using the default skin: {error:#}"
+            );
+            None
+        }
+    };
     let connection = zbus::Connection::session()
         .await
         .context("cannot connect to the session bus; is trafficviewd running?")?;
@@ -161,7 +170,13 @@ async fn dbus_loop(
                 if let Some(store) = &store {
                     if let Ok(next) = store.load() {
                         if next.overlay.skin != config.overlay.skin {
-                            skin_renderer = load_skin_renderer(&next)?;
+                            match load_skin_renderer(&next) {
+                                Ok(renderer) => skin_renderer = renderer,
+                                Err(error) => eprintln!(
+                                    "overlay: cannot load skin {}, keeping the current skin: {error:#}",
+                                    next.overlay.skin
+                                ),
+                            }
                         }
                         config = next;
                     }

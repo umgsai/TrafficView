@@ -154,8 +154,27 @@ async fn run_session(
         }
     };
 
+    // daemon 退出时 ConfigChanged 流不会结束；空闲时没人调用方法就永远发现不了断连，
+    // 界面会一直显示“已连接”。这里每 2 秒主动确认服务名是否仍被持有。
+    let bus = match zbus::fdo::DBusProxy::new(&conn).await {
+        Ok(bus) => bus,
+        Err(error) => {
+            return RunOutcome::Disconnected(format!("cannot query the session bus: {error}"));
+        }
+    };
+    let mut health = tokio::time::interval(Duration::from_secs(2));
+
     loop {
         tokio::select! {
+            _ = health.tick() => {
+                let owned = match zbus::names::BusName::try_from(BUS_NAME) {
+                    Ok(name) => bus.name_has_owner(name).await.unwrap_or(false),
+                    Err(_) => false,
+                };
+                if !owned {
+                    return RunOutcome::Disconnected("守护进程已退出".into());
+                }
+            }
             cmd = cmd_rx.recv() => {
                 match cmd {
                     Ok(DbusCommand::Quit) => return RunOutcome::Quit,

@@ -66,6 +66,25 @@ fn combo_set(row: &adw::ComboRow, value: &str) {
     }
 }
 
+/// “自动选择”在 D-Bus 契约里是空字符串，只在界面上显示成文案。
+const AUTO_INTERFACE_LABEL: &str = "（自动选择默认网卡）";
+
+fn interface_value(selected: &str) -> String {
+    if selected == AUTO_INTERFACE_LABEL {
+        String::new()
+    } else {
+        selected.to_string()
+    }
+}
+
+fn set_active_interface_row(row: &adw::ComboRow, value: &str) {
+    if value.is_empty() {
+        row.set_selected(0);
+    } else {
+        combo_set(row, value);
+    }
+}
+
 /// 主应用状态：D-Bus 客户端、当前配置快照与全部控件句柄。
 struct AppState {
     client: DaemonClient,
@@ -184,7 +203,7 @@ impl AppState {
             .set_value(f64::from(cfg.sample_interval_ms));
         self.autostart.set_active(autostart::is_enabled());
 
-        combo_set(&self.active_interface, &cfg.active_interface);
+        set_active_interface_row(&self.active_interface, &cfg.active_interface);
         self.blacklist.set_text(&join_csv(&cfg.interface_blacklist));
         self.whitelist.set_text(&join_csv(&cfg.interface_whitelist));
         combo_set(&self.smoothing, &cfg.network_smoothing);
@@ -221,7 +240,8 @@ impl AppState {
     fn collect_config(&self) -> UiConfig {
         let mut cfg = self.config.borrow().clone();
         cfg.sample_interval_ms = self.sample_interval.value() as u32;
-        cfg.active_interface = combo_selected(&self.active_interface).unwrap_or_default();
+        cfg.active_interface =
+            interface_value(&combo_selected(&self.active_interface).unwrap_or_default());
         cfg.interface_blacklist = split_csv(&self.blacklist.text());
         cfg.interface_whitelist = split_csv(&self.whitelist.text());
         cfg.network_smoothing = combo_selected(&self.smoothing).unwrap_or_else(|| "none".into());
@@ -251,13 +271,13 @@ impl AppState {
     fn rebuild_interface_model(&self, ifaces: &[String]) {
         let model = &self.interface_model;
         model.splice(0, model.n_items(), &[]);
-        model.append("（自动选择默认网卡）");
+        model.append(AUTO_INTERFACE_LABEL);
         let current = self.config.borrow().active_interface.clone();
         for iface in ifaces {
             model.append(iface);
         }
         self.loading.set(true);
-        combo_set(&self.active_interface, &current);
+        set_active_interface_row(&self.active_interface, &current);
         self.loading.set(false);
     }
 
@@ -413,7 +433,7 @@ fn on_activate(app: &adw::Application) {
     autostart.set_title("开机自启动");
     autostart.set_subtitle("写入当前用户的 XDG 自启动条目，无需提权");
 
-    let (active_interface, interface_model) = combo(&["（自动选择默认网卡）"]);
+    let (active_interface, interface_model) = combo(&[AUTO_INTERFACE_LABEL]);
     active_interface.set_title("活动网卡");
     active_interface.set_subtitle("留空表示按默认路由自动选择");
 
@@ -719,4 +739,19 @@ fn wire_dirty<T: glib::object::IsA<glib::Object> + Clone + 'static>(
     widget.connect_notify_local(Some(property), move |_, _| {
         state.borrow().mark_dirty();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::interface_value;
+
+    #[test]
+    fn auto_interface_maps_to_empty_string() {
+        assert_eq!(interface_value("（自动选择默认网卡）"), "");
+    }
+
+    #[test]
+    fn real_interface_is_kept() {
+        assert_eq!(interface_value("enp0s3"), "enp0s3");
+    }
 }
