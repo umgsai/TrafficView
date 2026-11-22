@@ -156,3 +156,37 @@ fn transparent_background_keeps_zero_alpha() {
     let total = (frame.width * frame.height) as usize;
     assert!(opaque > 0 && opaque < total, "text pixels should be sparse");
 }
+
+#[test]
+fn color_scheme_changes_the_cache_key_but_not_item_geometry() {
+    let skin = Skin::parse(
+        "[meta]\nname='theme'\n[canvas]\nwidth=120\nheight=40\nbackground_color='#101010'\n[[item]]\nid='cpu'\nrect=[4,4,112,32]",
+        Path::new("fixture"),
+    )
+    .unwrap();
+    let mut renderer = Renderer::new(skin).unwrap();
+    let dark = renderer.render(&snapshot(), 1.0).unwrap();
+    renderer.set_color_scheme(trafficview_core::ColorScheme::Light);
+    let light = renderer.render(&snapshot(), 1.0).unwrap();
+    assert_ne!(dark.cache_key, light.cache_key);
+    assert_eq!(dark.regions, light.regions);
+    assert_eq!((dark.width, dark.height), (light.width, light.height));
+}
+
+#[test]
+fn fixed_layout_render_includes_scheme_in_the_cache_key() {
+    let config = trafficview_core::config::Config::default();
+    let dark = trafficview_render::render_with_scheme(
+        &snapshot(),
+        &config,
+        96,
+        trafficview_core::ColorScheme::Dark,
+    );
+    let light = trafficview_render::render_with_scheme(
+        &snapshot(),
+        &config,
+        96,
+        trafficview_core::ColorScheme::Light,
+    );
+    assert_ne!(dark.cache_key, light.cache_key);
+}

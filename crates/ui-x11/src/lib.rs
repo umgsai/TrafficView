@@ -34,11 +34,23 @@ trait Daemon1 {
     fn get_snapshot(
         &self,
     ) -> zbus::Result<std::collections::HashMap<String, zbus::zvariant::OwnedValue>>;
+    #[zbus(property)]
+    fn color_scheme(&self) -> zbus::Result<String>;
     #[zbus(signal)]
     fn sample(
         &self,
         snapshot: std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
     ) -> zbus::Result<()>;
+    #[zbus(signal)]
+    fn config_changed(&self) -> zbus::Result<()>;
+}
+
+fn parse_scheme(value: &str) -> trafficview_core::ColorScheme {
+    if value.eq_ignore_ascii_case("light") {
+        trafficview_core::ColorScheme::Light
+    } else {
+        trafficview_core::ColorScheme::Dark
+    }
 }
 
 pub struct FrameUpdate {
@@ -91,30 +103,72 @@ async fn dbus_loop(config: Config, dpi: u32, frames: Sender<FrameUpdate>) -> Res
     let proxy = Daemon1Proxy::new(&connection)
         .await
         .context("cannot reach trafficviewd; start the daemon first")?;
+    let mut scheme = proxy
+        .color_scheme()
+        .await
+        .map(|value| parse_scheme(&value))
+        .unwrap_or_default();
+    if let Some(renderer) = skin_renderer.as_mut() {
+        renderer.set_color_scheme(scheme);
+    }
     let mut stream = proxy
         .receive_sample()
         .await
         .context("cannot subscribe to the Sample signal")?;
-    while let Some(signal) = stream.next().await {
-        let args = signal.args()?;
-        let snapshot = trafficview_daemon::dbus::snapshot_from_dbus(&args.snapshot)?;
-        let frame = match &mut skin_renderer {
-            Some(renderer) => renderer
-                .render(&snapshot, dpi as f32 / trafficview_render::BASE_DPI as f32)
-                .map_err(|error| anyhow::anyhow!(error))?,
-            None => trafficview_render::render(&snapshot, &config, dpi),
-        };
-        if frames
-            .send(FrameUpdate {
-                frame,
-                click_through: config.overlay.click_through,
-            })
-            .is_err()
-        {
-            break;
+    let mut config_stream = proxy
+        .receive_config_changed()
+        .await
+        .context("cannot subscribe to the ConfigChanged signal")?;
+    let mut last_snapshot: Option<Snapshot> = None;
+    loop {
+        tokio::select! {
+            signal = stream.next() => {
+                let Some(signal) = signal else { break };
+                let args = signal.args()?;
+                let snapshot = trafficview_daemon::dbus::snapshot_from_dbus(&args.snapshot)?;
+                send_frame(&mut skin_renderer, &config, dpi, scheme, &snapshot, &frames)?;
+                last_snapshot = Some(snapshot);
+            }
+            changed = config_stream.next() => {
+                if changed.is_none() {
+                    break;
+                }
+                if let Ok(value) = proxy.color_scheme().await {
+                    scheme = parse_scheme(&value);
+                }
+                // 主题切换时即使采样文本没变也要重绘。
+                if let Some(snapshot) = &last_snapshot {
+                    send_frame(&mut skin_renderer, &config, dpi, scheme, snapshot, &frames)?;
+                }
+            }
         }
     }
     Ok(())
+}
+
+fn send_frame(
+    skin_renderer: &mut Option<trafficview_render::Renderer>,
+    config: &Config,
+    dpi: u32,
+    scheme: trafficview_core::ColorScheme,
+    snapshot: &Snapshot,
+    frames: &Sender<FrameUpdate>,
+) -> Result<()> {
+    let frame = match skin_renderer {
+        Some(renderer) => {
+            renderer.set_color_scheme(scheme);
+            renderer
+                .render(snapshot, dpi as f32 / trafficview_render::BASE_DPI as f32)
+                .map_err(|error| anyhow::anyhow!(error))?
+        }
+        None => trafficview_render::render_with_scheme(snapshot, config, dpi, scheme),
+    };
+    frames
+        .send(FrameUpdate {
+            frame,
+            click_through: config.overlay.click_through,
+        })
+        .map_err(|_| anyhow::anyhow!("overlay window closed"))
 }
 
 fn load_skin_renderer(config: &Config) -> Result<Option<trafficview_render::Renderer>> {

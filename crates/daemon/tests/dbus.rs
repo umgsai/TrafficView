@@ -18,6 +18,12 @@ static BUS_LOCK: Mutex<()> = Mutex::const_new(());
 )]
 trait Daemon1 {
     fn get_snapshot(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
+    fn get_traffic_summary(
+        &self,
+        scope: &str,
+        iface_stable: &str,
+    ) -> zbus::Result<HashMap<String, OwnedValue>>;
+    fn get_interface_details(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     fn set_active_interface(&self, name: &str) -> zbus::Result<()>;
     fn set_interval(&self, ms: u32) -> zbus::Result<()>;
     fn pause(&self, paused: bool) -> zbus::Result<()>;
@@ -66,8 +72,33 @@ impl TestDaemon {
         store
             .load_or_create()
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let history_path = dir.path().join("history.db");
+        // 上一个测试 abort 掉 daemon 后，总线名称释放是异步的；先等它消失，
+        // 否则新 daemon 会因 NameTaken 提前退出，等待循环只能拿到超时错误。
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let reply = connection
+                .call_method(
+                    Some("org.freedesktop.DBus"),
+                    "/org/freedesktop/DBus",
+                    Some("org.freedesktop.DBus"),
+                    "NameHasOwner",
+                    &("com.trafficview.Daemon1",),
+                )
+                .await?;
+            let owned: bool = reply.body().deserialize()?;
+            if !owned {
+                break;
+            }
+            if Instant::now() >= deadline {
+                anyhow::bail!("previous trafficviewd did not release its bus name");
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         let handle = tokio::spawn(async move {
-            if let Err(error) = trafficview_daemon::service::run(store).await {
+            if let Err(error) =
+                trafficview_daemon::service::run_with_history(store, Some(history_path)).await
+            {
                 eprintln!("daemon exited: {error}");
             }
         });
@@ -155,6 +186,41 @@ async fn snapshot_properties_and_interval_validation_are_exposed() {
     // zbus 的 Proxy 会缓存属性值；用新 proxy 读取真实状态。
     let fresh = harness.proxy().await.unwrap();
     assert_eq!(fresh.sample_interval().await.unwrap(), 1500);
+}
+
+#[tokio::test]
+async fn traffic_summary_and_interface_details_are_exposed() {
+    let _guard = BUS_LOCK.lock().await;
+    let harness = TestDaemon::spawn().await.unwrap();
+    let proxy = harness.proxy().await.unwrap();
+
+    let summary = proxy.get_traffic_summary("day", "").await.unwrap();
+    for key in ["scope", "start", "end", "rx", "tx", "interfaces"] {
+        assert!(summary.contains_key(key), "missing summary key {key}");
+    }
+    assert_eq!(summary["interfaces"].value_signature().to_string(), "av");
+    assert!(
+        proxy.get_traffic_summary("year", "").await.is_err(),
+        "invalid scope must be rejected instead of returning all history"
+    );
+
+    let details = proxy.get_interface_details().await.unwrap();
+    assert!(!details.is_empty(), "expected at least one interface");
+    for (name, value) in &details {
+        assert_eq!(value.value_signature().to_string(), "a{sv}", "{name}");
+        let entry: HashMap<String, OwnedValue> = value.try_clone().unwrap().try_into().unwrap();
+        for key in [
+            "stable",
+            "mac",
+            "ifindex",
+            "operstate",
+            "carrier",
+            "loopback",
+            "active",
+        ] {
+            assert!(entry.contains_key(key), "missing {name}.{key}");
+        }
+    }
 }
 
 #[tokio::test]

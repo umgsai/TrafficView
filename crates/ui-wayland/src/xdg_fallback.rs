@@ -23,7 +23,8 @@ use wayland_client::{
 };
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
-use crate::{shm::ShmBuffer, spawn_snapshot_stream, FrameSource};
+use crate::{shm::ShmBuffer, spawn_snapshot_stream, FrameSource, SnapshotUpdate};
+use trafficview_core::ColorScheme;
 
 struct Window {
     surface: wl_surface::WlSurface,
@@ -39,8 +40,9 @@ struct State {
     compositor: wl_compositor::WlCompositor,
     shm: wl_shm::WlShm,
     source: FrameSource,
-    snapshot_rx: Receiver<Snapshot>,
+    snapshot_rx: Receiver<SnapshotUpdate>,
     latest: Option<Snapshot>,
+    scheme: ColorScheme,
     window: Option<Window>,
     closed: bool,
 }
@@ -68,6 +70,7 @@ pub fn run(config: Config) -> Result<()> {
         source,
         snapshot_rx: spawn_snapshot_stream(),
         latest: None,
+        scheme: ColorScheme::Dark,
         window: None,
         closed: false,
     };
@@ -78,8 +81,9 @@ pub fn run(config: Config) -> Result<()> {
     eprintln!("xdg_toplevel overlay ready (GNOME-safe fallback)");
 
     while !state.closed {
-        while let Ok(snapshot) = state.snapshot_rx.try_recv() {
-            state.latest = Some(snapshot);
+        while let Ok(update) = state.snapshot_rx.try_recv() {
+            state.latest = Some(update.snapshot);
+            state.scheme = update.scheme;
         }
         pump(&connection, &mut queue, &mut state)?;
         state.render_window(&queue_handle)?;
@@ -150,7 +154,7 @@ impl State {
         {
             return Ok(());
         }
-        let frame = self.source.render(&snapshot, 1.0)?;
+        let frame = self.source.render(&snapshot, 1.0, self.scheme)?;
         let needs_buffer = window
             .buffer
             .as_ref()

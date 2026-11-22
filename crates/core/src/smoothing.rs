@@ -80,7 +80,9 @@ impl Smoother {
         let tx = self.tx.push(tx_bps as f64);
         let (rx, tx) = match self.kind {
             NetworkSmoothing::None => (rx, tx),
-            NetworkSmoothing::MovingAverage3 => (self.rx.moving_average(), self.tx.moving_average()),
+            NetworkSmoothing::MovingAverage3 => {
+                (self.rx.moving_average(), self.tx.moving_average())
+            }
             NetworkSmoothing::Ema => (self.rx.ema(rx), self.tx.ema(tx)),
         };
         (round(rx), round(tx))

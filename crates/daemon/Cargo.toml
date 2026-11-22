@@ -18,6 +18,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signa
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zbus = { version = "4", default-features = false, features = ["tokio"] }
+futures-util = "0.3"
 trafficview-core = { path = "../core" }
 trafficview-collectors = { path = "../collectors" }
 rusqlite = { version = "0.32", features = ["bundled"] }

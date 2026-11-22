@@ -1,23 +1,35 @@
-//! daemon 调度：单采集器、固定周期、D-Bus 信号广播。
+//! daemon 调度：全接口采样、历史累计、自动选卡与 D-Bus 信号广播。
 
 use std::{
+    collections::HashMap,
     fs, io,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
+use chrono::Utc;
 use tokio::sync::{watch, RwLock};
 use tracing::{debug, info, warn};
-use trafficview_collectors::{cpu::ProcCpu, mem::read_mem_with_mode, net::ProcNetDev};
+use trafficview_collectors::{
+    cpu::ProcCpu, mem::read_mem_with_mode, net::NetSampler, netlink::NetlinkWatcher,
+};
 use trafficview_core::{
     clock::monotonic_ms,
     config::{Config, ConfigStore},
-    CpuSample, Snapshot,
+    smoothing::Smoother,
+    ColorScheme, CpuSample, InterfaceInfo, NetSample, Snapshot,
 };
 use zbus::object_server::SignalContext;
 
-use crate::dbus::{snapshot_to_dbus, Daemon1, BUS_NAME, PATH};
+use crate::{
+    alerts::{self, AlertEngine, Metric},
+    dbus::{snapshot_to_dbus, Daemon1, BUS_NAME, PATH},
+    history::HistoryStore,
+    network::{self, NetSelector},
+};
+
+pub use crate::network::{default_route_interface, parse_default_route};
 
 /// daemon 的唯一可变状态；D-Bus 接口与调度器共享。
 pub struct SharedState {
@@ -25,6 +37,18 @@ pub struct SharedState {
     pub snapshot: Option<Snapshot>,
     pub paused: bool,
     pub interfaces: Vec<String>,
+    /// 含稳定键的网卡详情；仅由 daemon 更新。
+    pub interface_details: Vec<InterfaceInfo>,
+    /// 当前实际采样的稳定键（`mac:...` 或 `name:...`）。
+    pub active_stable: Option<String>,
+    /// 历史库不可用时为 `None`，daemon 继续提供实时指标。
+    pub history: Option<Arc<Mutex<HistoryStore>>>,
+    /// 告警状态机；配置 reload 时重建规则。
+    pub alerts: Mutex<AlertEngine>,
+    /// portal 最近一次报告的原始配色值（0/1/2）；不可用时为 `None`。
+    pub portal_scheme: Option<u32>,
+    /// 供前端读取的最终配色。
+    pub color_scheme: ColorScheme,
     pub shutdown: watch::Sender<bool>,
 }
 
@@ -42,82 +66,33 @@ pub fn list_interfaces(net_root: &Path) -> Vec<String> {
     names
 }
 
-/// 从 `/proc/net/route` 文本解析默认路由网卡（Destination 与 Mask 均为 0 且 RTF_UP）。
-pub fn parse_default_route(text: &str) -> Option<String> {
-    text.lines().skip(1).find_map(|line| {
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.len() < 8 {
-            return None;
-        }
-        let flags = u16::from_str_radix(fields[3], 16).ok()?;
-        let is_default = fields[1] == "00000000" && fields[7] == "00000000";
-        (is_default && flags & 0x1 != 0).then(|| fields[0].to_owned())
-    })
-}
-
-pub fn default_route_interface(proc_root: &Path) -> io::Result<String> {
-    let text = fs::read_to_string(proc_root.join("net/route"))?;
-    parse_default_route(&text)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no default route interface found"))
-}
-
-struct Sampler {
-    iface: String,
-    net: ProcNetDev,
-    cpu: ProcCpu,
-    last: Instant,
-}
-
-impl Sampler {
-    fn new(iface: &str, proc_root: &Path) -> io::Result<Self> {
-        let mut net = ProcNetDev::new(proc_root);
-        let mut cpu = ProcCpu::new(proc_root);
-        net.sample(iface, Duration::ZERO)?;
-        cpu.sample(Duration::ZERO)?;
-        Ok(Self {
-            iface: iface.to_owned(),
-            net,
-            cpu,
-            last: Instant::now(),
-        })
-    }
-
-    fn sample(&mut self, proc_root: &Path, include_cache: bool) -> io::Result<Option<Snapshot>> {
-        let now = Instant::now();
-        let elapsed = now.duration_since(self.last);
-        self.last = now;
-        let Some(net) = self.net.sample(&self.iface, elapsed)? else {
-            return Ok(None);
-        };
-        let Some((total_pct, per_core)) = self.cpu.sample(elapsed)? else {
-            return Ok(None);
-        };
-        let mem = read_mem_with_mode(proc_root, include_cache)?;
-        Ok(Some(Snapshot::new(
-            monotonic_ms(),
-            net,
-            CpuSample {
-                total_pct,
-                per_core,
-                freq_mhz: None,
-                load: None,
-            },
-            mem,
-        )))
-    }
-}
-
 /// 启动 daemon：注册名称、启动调度、等待 SIGINT 或 Quit。
 pub async fn run(config_store: ConfigStore) -> anyhow::Result<()> {
+    run_with_history(config_store, None).await
+}
+
+/// 可注入历史库路径（测试使用临时目录，避免污染真实 XDG data）。
+pub async fn run_with_history(
+    config_store: ConfigStore,
+    history_path: Option<PathBuf>,
+) -> anyhow::Result<()> {
     let config = config_store
         .load_or_create()
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let history = open_history(history_path, &config);
+    let alerts = Mutex::new(AlertEngine::new(config.alerts.rules.clone()));
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let state = Arc::new(RwLock::new(SharedState {
         config,
         snapshot: None,
         paused: false,
         interfaces: list_interfaces(Path::new("/sys/class/net")),
+        interface_details: Vec::new(),
+        active_stable: None,
+        history,
+        alerts,
+        portal_scheme: None,
+        color_scheme: ColorScheme::Dark,
         shutdown: shutdown_tx,
     }));
     let daemon = Daemon1::new(state.clone(), config_store);
@@ -138,7 +113,19 @@ pub async fn run(config_store: ConfigStore) -> anyhow::Result<()> {
     let interfaces = state.read().await.interfaces.clone();
     let _ = Daemon1::notify_interfaces(&context, interfaces).await;
 
-    let task = tokio::spawn(scheduler(state.clone(), context, PathBuf::from("/proc")));
+    // portal 读取可能触发服务激活甚至超时；放到后台，绝不阻塞采样。
+    tokio::spawn(theme_init(
+        state.clone(),
+        context.clone(),
+        connection.clone(),
+    ));
+
+    let task = tokio::spawn(scheduler(
+        state.clone(),
+        context,
+        PathBuf::from("/proc"),
+        PathBuf::from("/sys/class/net"),
+    ));
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => info!("ctrl-c received, shutting down"),
@@ -149,21 +136,77 @@ pub async fn run(config_store: ConfigStore) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn open_history(explicit: Option<PathBuf>, config: &Config) -> Option<Arc<Mutex<HistoryStore>>> {
+    let path = explicit.or_else(HistoryStore::default_path)?;
+    match HistoryStore::open(
+        &path,
+        &config.history.timezone,
+        config.history.retention_days,
+    ) {
+        Ok(store) => {
+            info!(path = %path.display(), "traffic history is ready");
+            Some(Arc::new(Mutex::new(store)))
+        }
+        Err(error) => {
+            warn!(%error, path = %path.display(), "cannot open traffic history; continuing without it");
+            None
+        }
+    }
+}
+
+struct RuntimeSampler {
+    net: NetSampler,
+    cpu: ProcCpu,
+    last: Instant,
+    smoothing: Smoother,
+    smoothed_iface: Option<String>,
+    watcher: Option<NetlinkWatcher>,
+}
+
+impl RuntimeSampler {
+    fn new(proc_root: &Path, config: &Config) -> io::Result<Self> {
+        let mut net = NetSampler::new(proc_root);
+        let mut cpu = ProcCpu::new(proc_root);
+        // 建立首帧基线；速率在下一次采样才有效。
+        let _ = net.sample_all(Duration::ZERO)?;
+        let _ = cpu.sample(Duration::ZERO)?;
+        let watcher = match NetlinkWatcher::spawn() {
+            Ok(watcher) => Some(watcher),
+            Err(error) => {
+                warn!(%error, "netlink hotplug watcher unavailable; polling each sample");
+                None
+            }
+        };
+        Ok(Self {
+            net,
+            cpu,
+            last: Instant::now(),
+            smoothing: Smoother::new(config.network_smoothing),
+            smoothed_iface: None,
+            watcher,
+        })
+    }
+}
+
 async fn scheduler(
     state: Arc<RwLock<SharedState>>,
     context: SignalContext<'static>,
     proc_root: PathBuf,
+    sys_root: PathBuf,
 ) {
     let mut shutdown = state.read().await.shutdown.subscribe();
-    let mut sampler: Option<Sampler> = None;
+    let mut sampler: Option<RuntimeSampler> = None;
     loop {
-        let (interval_ms, paused, configured_iface, include_cache) = {
+        let (interval_ms, paused, configured_iface, include_cache, whitelist, blacklist, smoothing) = {
             let state = state.read().await;
             (
                 state.config.sample_interval_ms,
                 state.paused,
                 state.config.active_interface.clone(),
                 state.config.memory_include_cache,
+                state.config.interface_whitelist.clone(),
+                state.config.interface_blacklist.clone(),
+                state.config.network_smoothing,
             )
         };
         tokio::select! {
@@ -182,45 +225,329 @@ async fn scheduler(
             sampler = None;
             continue;
         }
-        let iface = if configured_iface.is_empty() {
-            match default_route_interface(&proc_root) {
-                Ok(iface) => iface,
+        if sampler.is_none() {
+            let config = state.read().await.config.clone();
+            match RuntimeSampler::new(&proc_root, &config) {
+                Ok(active) => {
+                    info!(
+                        source = active.net.last_source(),
+                        "network counter baseline established"
+                    );
+                    sampler = Some(active);
+                }
                 Err(error) => {
-                    warn!(%error, "cannot resolve the default route interface");
-                    sampler = None;
+                    warn!(%error, "cannot establish a collector baseline");
                     continue;
                 }
             }
-        } else {
-            configured_iface
-        };
-        let needs_baseline = sampler
-            .as_ref()
-            .map(|active| active.iface != iface)
-            .unwrap_or(true);
-        if needs_baseline {
-            match Sampler::new(&iface, &proc_root) {
-                Ok(active) => sampler = Some(active),
-                Err(error) => {
-                    warn!(%error, iface, "cannot establish a collector baseline");
-                    sampler = None;
-                }
-            }
-            continue;
         }
         let Some(active) = sampler.as_mut() else {
             continue;
         };
-        match active.sample(&proc_root, include_cache) {
-            Ok(Some(snapshot)) => {
-                let dict = snapshot_to_dbus(&snapshot);
-                state.write().await.snapshot = Some(snapshot);
-                if let Err(error) = Daemon1::sample(&context, dict).await {
-                    warn!(%error, "failed to emit Sample signal");
+        if active.smoothing.kind() != smoothing {
+            active.smoothing = Smoother::new(smoothing);
+            active.smoothed_iface = None;
+        }
+        if active
+            .watcher
+            .as_ref()
+            .is_some_and(NetlinkWatcher::take_dirty)
+        {
+            debug!("netlink reported a link/route change; refreshing interfaces now");
+        }
+
+        let now = Instant::now();
+        let elapsed = now.duration_since(active.last);
+        active.last = now;
+        let counters = match active.net.sample_all(elapsed) {
+            Ok(counters) => counters,
+            Err(error) => {
+                warn!(%error, "network sampling failed; daemon remains alive");
+                continue;
+            }
+        };
+        let cpu = match active.cpu.sample(elapsed) {
+            Ok(Some(cpu)) => cpu,
+            Ok(None) => {
+                debug!("discarding a CPU baseline-only frame");
+                continue;
+            }
+            Err(error) => {
+                warn!(%error, "CPU sampling failed; daemon remains alive");
+                continue;
+            }
+        };
+        let mem = match read_mem_with_mode(&proc_root, include_cache) {
+            Ok(mem) => mem,
+            Err(error) => {
+                warn!(%error, "memory sampling failed; daemon remains alive");
+                continue;
+            }
+        };
+
+        let details = network::discover(&sys_root);
+        refresh_interfaces(&state, &context, &details).await;
+        record_history(&state, &details, &counters).await;
+
+        let rates: HashMap<String, u64> = counters
+            .iter()
+            .map(|(name, sample)| {
+                (
+                    name.clone(),
+                    sample.rx_bps.unwrap_or(0) + sample.tx_bps.unwrap_or(0),
+                )
+            })
+            .collect();
+        let chosen = if configured_iface.is_empty() {
+            let default_route = default_route_interface(&proc_root).ok();
+            match NetSelector::new(&whitelist, &blacklist, default_route) {
+                Ok(selector) => selector
+                    .choose(&details, &rates)
+                    .ok()
+                    .map(|iface| iface.name.clone()),
+                Err(error) => {
+                    warn!(%error, "invalid interface patterns in configuration");
+                    None
                 }
             }
-            Ok(None) => debug!("discarding a baseline-only frame"),
-            Err(error) => warn!(%error, "sample failed; daemon remains alive"),
+        } else {
+            details
+                .iter()
+                .find(|iface| iface.name == configured_iface)
+                .map(|iface| iface.name.clone())
+                .or(Some(configured_iface))
+        };
+        let Some(chosen) = chosen else {
+            warn!("no active interface; keeping the daemon and history available");
+            continue;
+        };
+        let Some(sample) = counters.get(&chosen) else {
+            warn!(iface = %chosen, "chosen interface has no counters in this frame");
+            continue;
+        };
+        let (Some(raw_rx), Some(raw_tx)) = (sample.rx_bps, sample.tx_bps) else {
+            debug!(iface = %chosen, "discarding a network baseline-only frame");
+            continue;
+        };
+        if active.smoothed_iface.as_deref() != Some(chosen.as_str()) {
+            active.smoothing.reset();
+            active.smoothed_iface = Some(chosen.clone());
+        }
+        let (rx_bps, tx_bps) = active.smoothing.apply(raw_rx, raw_tx);
+        evaluate_alerts(&state, &context, cpu.0, mem.used_pct, raw_rx, raw_tx).await;
+        let stable = details
+            .iter()
+            .find(|iface| iface.name == chosen)
+            .map(|iface| iface.stable.clone())
+            .unwrap_or_else(|| network::stable_key(&chosen, None));
+        let snapshot = Snapshot::new(
+            monotonic_ms(),
+            NetSample {
+                iface: chosen.clone(),
+                rx_bps,
+                tx_bps,
+                rx_total: sample.rx_total,
+                tx_total: sample.tx_total,
+            },
+            CpuSample {
+                total_pct: cpu.0,
+                per_core: cpu.1,
+                freq_mhz: None,
+                load: None,
+            },
+            mem,
+        );
+        let dict = snapshot_to_dbus(&snapshot);
+        {
+            let mut state = state.write().await;
+            let changed = state.active_stable.as_deref() != Some(stable.as_str());
+            state.snapshot = Some(snapshot);
+            state.active_stable = Some(stable.clone());
+            drop(state);
+            if changed {
+                info!(iface = %chosen, %stable, "active network interface changed");
+            }
+        }
+        if let Err(error) = Daemon1::sample(&context, dict).await {
+            warn!(%error, "failed to emit Sample signal");
+        }
+    }
+}
+
+async fn theme_init(
+    state: Arc<RwLock<SharedState>>,
+    context: SignalContext<'static>,
+    connection: zbus::Connection,
+) {
+    let value = match tokio::time::timeout(
+        Duration::from_millis(500),
+        crate::theme::read_portal_scheme(&connection),
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(_) => {
+            warn!("appearance portal did not answer within 500ms; keeping dark theme");
+            None
+        }
+    };
+    if let Some(value) = value {
+        let scheme = {
+            let mut state = state.write().await;
+            state.portal_scheme = Some(value);
+            state.color_scheme = crate::theme::decide(state.config.theme, Some(value));
+            state.color_scheme
+        };
+        info!(
+            portal = value,
+            scheme = crate::theme::scheme_name(scheme),
+            "desktop color scheme detected"
+        );
+    }
+    if let Some(receiver) = crate::theme::subscribe(&connection).await {
+        theme_watcher(state, context, receiver).await;
+    }
+}
+
+async fn theme_watcher(
+    state: Arc<RwLock<SharedState>>,
+    context: SignalContext<'static>,
+    mut receiver: tokio::sync::mpsc::Receiver<u32>,
+) {
+    while let Some(value) = receiver.recv().await {
+        let scheme = {
+            let mut state = state.write().await;
+            state.portal_scheme = Some(value);
+            state.color_scheme = crate::theme::decide(state.config.theme, Some(value));
+            state.color_scheme
+        };
+        info!(
+            portal = value,
+            scheme = crate::theme::scheme_name(scheme),
+            "desktop color scheme changed"
+        );
+        let _ = Daemon1::config_changed(&context).await;
+    }
+}
+
+async fn refresh_interfaces(
+    state: &Arc<RwLock<SharedState>>,
+    context: &SignalContext<'static>,
+    details: &[InterfaceInfo],
+) {
+    let names: Vec<String> = details.iter().map(|iface| iface.name.clone()).collect();
+    let mut state = state.write().await;
+    let changed = state.interfaces != names;
+    state.interfaces = names.clone();
+    state.interface_details = details.to_vec();
+    drop(state);
+    if changed {
+        info!(?names, "network interface set changed");
+        let _ = Daemon1::notify_interfaces(context, names).await;
+    }
+}
+
+async fn evaluate_alerts(
+    state: &Arc<RwLock<SharedState>>,
+    context: &SignalContext<'static>,
+    cpu_pct: f32,
+    mem_pct: f32,
+    rx_bps: u64,
+    tx_bps: u64,
+) {
+    let now_secs = Utc::now().timestamp();
+    let (month_enabled, history) = {
+        let state = state.read().await;
+        (
+            state
+                .config
+                .alerts
+                .rules
+                .iter()
+                .any(|rule| rule.enabled && rule.metric == "month_bytes"),
+            state.history.clone(),
+        )
+    };
+    let month_bytes = if month_enabled {
+        history.and_then(|history| {
+            let store = history.lock().ok()?;
+            let summary = store.summary("month", None, Utc::now()).ok()?;
+            Some(summary.rx + summary.tx)
+        })
+    } else {
+        None
+    };
+    let events = {
+        let state = state.read().await;
+        let Ok(mut engine) = state.alerts.lock() else {
+            warn!("alert engine mutex is poisoned");
+            return;
+        };
+        let mut events = engine.observe_cpu(now_secs, f64::from(cpu_pct));
+        events.extend(engine.observe_mem(now_secs, f64::from(mem_pct)));
+        events.extend(engine.observe(Metric::NetRxBps, now_secs, rx_bps as f64));
+        events.extend(engine.observe(Metric::NetTxBps, now_secs, tx_bps as f64));
+        if let Some(bytes) = month_bytes {
+            events.extend(engine.observe(Metric::MonthBytes, now_secs, bytes as f64));
+        }
+        events
+    };
+    for event in events {
+        info!(
+            code = %event.code,
+            active = event.active,
+            "alert event: {}",
+            event.message
+        );
+        if let Err(error) = Daemon1::alert(
+            context,
+            event.level.clone(),
+            event.code.clone(),
+            event.message.clone(),
+        )
+        .await
+        {
+            warn!(%error, "failed to emit Alert signal");
+        }
+        if event.active {
+            let desktop = event.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Err(error) = alerts::send_desktop_notification(&desktop) {
+                    warn!(%error, "desktop notification is unavailable");
+                }
+            });
+        }
+    }
+}
+
+async fn record_history(
+    state: &Arc<RwLock<SharedState>>,
+    details: &[InterfaceInfo],
+    counters: &std::collections::BTreeMap<String, trafficview_collectors::net::InterfaceSample>,
+) {
+    let Some(history) = state.read().await.history.clone() else {
+        return;
+    };
+    let stable: HashMap<&str, &str> = details
+        .iter()
+        .map(|iface| (iface.name.as_str(), iface.stable.as_str()))
+        .collect();
+    let now = Utc::now();
+    let Ok(mut store) = history.lock() else {
+        warn!("history mutex is poisoned; skipping this sample");
+        return;
+    };
+    for (name, sample) in counters {
+        let stable = stable
+            .get(name.as_str())
+            .copied()
+            .map(str::to_owned)
+            .unwrap_or_else(|| network::stable_key(name, None));
+        let result = store
+            .upsert_interface(&stable, name)
+            .and_then(|id| store.observe(id, now, sample.rx_total, sample.tx_total));
+        if let Err(error) = result {
+            warn!(%error, iface = %name, "cannot persist traffic history");
         }
     }
 }

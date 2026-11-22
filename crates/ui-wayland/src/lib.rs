@@ -10,8 +10,15 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use futures_util::StreamExt;
-use trafficview_core::{config::Config, Snapshot};
+use trafficview_core::{config::Config, ColorScheme, Snapshot};
 use trafficview_render::{skin::Skin, RenderedFrame, Renderer};
+
+/// 快照与当前配色；主题变化时前端不需要重新查询 portal。
+#[derive(Debug, Clone)]
+pub(crate) struct SnapshotUpdate {
+    pub snapshot: Snapshot,
+    pub scheme: ColorScheme,
+}
 
 /// 会话后端选择。GNOME 明确不支持 layer-shell，必须走普通窗口。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,22 +174,31 @@ impl FrameSource {
         }
     }
 
-    pub(crate) fn render(&mut self, snapshot: &Snapshot, scale: f64) -> Result<RenderedFrame> {
+    pub(crate) fn render(
+        &mut self,
+        snapshot: &Snapshot,
+        scale: f64,
+        scheme: ColorScheme,
+    ) -> Result<RenderedFrame> {
         match self {
-            Self::Fixed(config) => Ok(trafficview_render::render(
+            Self::Fixed(config) => Ok(trafficview_render::render_with_scheme(
                 snapshot,
                 config,
                 (96.0 * scale).round().max(1.0) as u32,
+                scheme,
             )),
-            Self::Skin(renderer) => renderer
-                .render(snapshot, scale as f32)
-                .map_err(|error| anyhow::anyhow!(error)),
+            Self::Skin(renderer) => {
+                renderer.set_color_scheme(scheme);
+                renderer
+                    .render(snapshot, scale as f32)
+                    .map_err(|error| anyhow::anyhow!(error))
+            }
         }
     }
 }
 
 /// D-Bus 快照线程：先 `GetSnapshot` 再订阅 `Sample`，daemon 重启后自动重连。
-pub(crate) fn spawn_snapshot_stream() -> Receiver<Snapshot> {
+pub(crate) fn spawn_snapshot_stream() -> Receiver<SnapshotUpdate> {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -205,7 +221,7 @@ pub(crate) fn spawn_snapshot_stream() -> Receiver<Snapshot> {
     receiver
 }
 
-async fn stream_once(sender: &std::sync::mpsc::Sender<Snapshot>) -> Result<()> {
+async fn stream_once(sender: &std::sync::mpsc::Sender<SnapshotUpdate>) -> Result<()> {
     let connection = zbus::Connection::session()
         .await
         .context("cannot connect to the session bus")?;
@@ -217,25 +233,56 @@ async fn stream_once(sender: &std::sync::mpsc::Sender<Snapshot>) -> Result<()> {
     )
     .await
     .context("cannot build the trafficviewd proxy")?;
+    let mut scheme = read_scheme(&proxy).await;
+    let mut last: Option<Snapshot> = None;
     if let Ok(reply) = proxy.call_method("GetSnapshot", &()).await {
         let dict: std::collections::HashMap<String, zbus::zvariant::OwnedValue> =
             reply.body().deserialize()?;
         let snapshot = trafficview_daemon::dbus::snapshot_from_dbus(&dict)?;
-        if sender.send(snapshot).is_err() {
+        last = Some(snapshot.clone());
+        if sender.send(SnapshotUpdate { snapshot, scheme }).is_err() {
             bail!("overlay receiver closed");
         }
     }
-    let mut stream = proxy
+    let mut samples = proxy
         .receive_signal("Sample")
         .await
         .context("cannot subscribe to Sample")?;
-    while let Some(message) = stream.next().await {
-        let dict: std::collections::HashMap<String, zbus::zvariant::OwnedValue> =
-            message.body().deserialize()?;
-        let snapshot = trafficview_daemon::dbus::snapshot_from_dbus(&dict)?;
-        if sender.send(snapshot).is_err() {
-            break;
+    let mut configs = proxy
+        .receive_signal("ConfigChanged")
+        .await
+        .context("cannot subscribe to ConfigChanged")?;
+    loop {
+        tokio::select! {
+            message = samples.next() => {
+                let Some(message) = message else { break };
+                let dict: std::collections::HashMap<String, zbus::zvariant::OwnedValue> =
+                    message.body().deserialize()?;
+                let snapshot = trafficview_daemon::dbus::snapshot_from_dbus(&dict)?;
+                last = Some(snapshot.clone());
+                if sender.send(SnapshotUpdate { snapshot, scheme }).is_err() {
+                    break;
+                }
+            }
+            message = configs.next() => {
+                if message.is_none() {
+                    break;
+                }
+                scheme = read_scheme(&proxy).await;
+                if let Some(snapshot) = &last {
+                    if sender.send(SnapshotUpdate { snapshot: snapshot.clone(), scheme }).is_err() {
+                        break;
+                    }
+                }
+            }
         }
     }
     Ok(())
+}
+
+async fn read_scheme(proxy: &zbus::Proxy<'_>) -> ColorScheme {
+    match proxy.get_property::<String>("ColorScheme").await {
+        Ok(value) if value.eq_ignore_ascii_case("light") => ColorScheme::Light,
+        _ => ColorScheme::Dark,
+    }
 }

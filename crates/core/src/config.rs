@@ -285,7 +285,10 @@ impl Config {
                 rule.metric.as_str(),
                 "cpu_pct" | "mem_pct" | "net_rx_bps" | "net_tx_bps" | "month_bytes"
             ) {
-                return Err(format!("alerts rule metric '{}' is not supported", rule.metric));
+                return Err(format!(
+                    "alerts rule metric '{}' is not supported",
+                    rule.metric
+                ));
             }
             if !matches!(rule.op.as_str(), ">" | ">=" | "<" | "<=") {
                 return Err(format!("alerts rule op '{}' is not supported", rule.op));
@@ -294,7 +297,10 @@ impl Config {
                 return Err("alerts rule threshold must be a non-negative number".into());
             }
             if !matches!(rule.level.as_str(), "info" | "warning" | "critical") {
-                return Err(format!("alerts rule level '{}' is not supported", rule.level));
+                return Err(format!(
+                    "alerts rule level '{}' is not supported",
+                    rule.level
+                ));
             }
             if !rule.quiet_hours.is_empty() && !valid_quiet_hours(&rule.quiet_hours) {
                 return Err(format!(

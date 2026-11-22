@@ -28,8 +28,9 @@ use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_l
 
 use crate::{
     shm::{empty_input_region, ShmBuffer},
-    spawn_snapshot_stream, FrameSource,
+    spawn_snapshot_stream, FrameSource, SnapshotUpdate,
 };
+use trafficview_core::ColorScheme;
 
 struct OutputState {
     output: wl_output::WlOutput,
@@ -58,8 +59,9 @@ struct State {
     outputs: HashMap<u32, OutputState>,
     windows: HashMap<u32, Window>,
     source: FrameSource,
-    snapshot_rx: Receiver<Snapshot>,
+    snapshot_rx: Receiver<SnapshotUpdate>,
     latest: Option<Snapshot>,
+    scheme: ColorScheme,
     position: [i32; 2],
 }
 
@@ -120,6 +122,7 @@ pub fn run(config: Config) -> Result<()> {
         source,
         snapshot_rx: spawn_snapshot_stream(),
         latest: None,
+        scheme: ColorScheme::Dark,
         position: config.overlay.position,
     };
 
@@ -136,8 +139,9 @@ pub fn run(config: Config) -> Result<()> {
     );
 
     loop {
-        while let Ok(snapshot) = state.snapshot_rx.try_recv() {
-            state.latest = Some(snapshot);
+        while let Ok(update) = state.snapshot_rx.try_recv() {
+            state.latest = Some(update.snapshot);
+            state.scheme = update.scheme;
         }
         pump(&connection, &mut queue, &mut state)?;
         state.render_windows(&queue_handle)?;
@@ -274,7 +278,7 @@ impl State {
             if !can_render {
                 continue;
             }
-            let frame = self.source.render(&snapshot, scale)?;
+            let frame = self.source.render(&snapshot, scale, self.scheme)?;
             let Some(window) = self.windows.get_mut(&id) else {
                 continue;
             };

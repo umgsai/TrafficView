@@ -18,6 +18,7 @@ use trafficview_core::{
     CpuSample, Snapshot,
 };
 use trafficview_render::{skin::Skin, Renderer};
+use zbus::zvariant::OwnedValue;
 
 #[derive(Parser)]
 #[command(name = "trafficview", version)]
@@ -62,6 +63,16 @@ enum Commands {
     Resume,
     /// 请求 daemon 退出。
     Quit,
+    /// 查询今日/本月历史流量（通过 D-Bus，不直接读数据库）。
+    History {
+        #[command(subcommand)]
+        command: HistoryScope,
+    },
+    /// 列出网卡详情与稳定键。
+    Interfaces {
+        #[arg(long)]
+        json: bool,
+    },
     /// 启动 X11 悬浮窗（只订阅 D-Bus，不读 /proc）。
     Overlay {
         #[arg(long, default_value = "auto")]
@@ -76,6 +87,23 @@ enum Commands {
     Autostart {
         #[command(subcommand)]
         command: AutostartCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum HistoryScope {
+    Today {
+        /// 稳定键（`mac:...` / `name:...`）；省略表示所有网卡。
+        #[arg(long, default_value = "")]
+        iface: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Month {
+        #[arg(long, default_value = "")]
+        iface: String,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -130,6 +158,11 @@ fn main() -> Result<()> {
         Commands::Pause => call_daemon("Pause", &(true)),
         Commands::Resume => call_daemon("Pause", &(false)),
         Commands::Quit => call_daemon("Quit", &()),
+        Commands::History { command } => match command {
+            HistoryScope::Today { iface, json } => history("day", &iface, json),
+            HistoryScope::Month { iface, json } => history("month", &iface, json),
+        },
+        Commands::Interfaces { json } => interfaces(json),
         Commands::Overlay { session } => {
             let config = ConfigStore::xdg()?.load_or_create()?;
             overlay(session, config)
@@ -389,6 +422,149 @@ where
         .call_method(method, body)
         .with_context(|| format!("cannot call {method}; is trafficviewd running?"))?;
     println!("{method} ok");
+    Ok(())
+}
+
+fn call_daemon_reply<B>(
+    method: &str,
+    body: &B,
+) -> Result<std::collections::HashMap<String, OwnedValue>>
+where
+    B: serde::Serialize + zbus::zvariant::DynamicType,
+{
+    let connection = connect()?;
+    let proxy = zbus::blocking::Proxy::new(
+        &connection,
+        "com.trafficview.Daemon1",
+        "/com/trafficview/Daemon1",
+        "com.trafficview.Daemon1",
+    )
+    .context("cannot build the trafficviewd proxy")?;
+    let reply = proxy
+        .call_method(method, body)
+        .with_context(|| format!("cannot call {method}; is trafficviewd running?"))?;
+    Ok(reply.body().deserialize()?)
+}
+
+fn field<'a>(
+    dict: &'a std::collections::HashMap<String, OwnedValue>,
+    key: &str,
+) -> Result<&'a OwnedValue> {
+    dict.get(key)
+        .with_context(|| format!("daemon reply is missing '{key}'"))
+}
+
+fn field_u64(dict: &std::collections::HashMap<String, OwnedValue>, key: &str) -> Result<u64> {
+    u64::try_from(field(dict, key)?).with_context(|| format!("'{key}' is not u64"))
+}
+
+fn field_string(dict: &std::collections::HashMap<String, OwnedValue>, key: &str) -> Result<String> {
+    String::try_from(field(dict, key)?.try_clone()?)
+        .with_context(|| format!("'{key}' is not a string"))
+}
+
+fn field_bool(dict: &std::collections::HashMap<String, OwnedValue>, key: &str) -> Result<bool> {
+    bool::try_from(field(dict, key)?.try_clone()?)
+        .with_context(|| format!("'{key}' is not a boolean"))
+}
+
+fn field_u32(dict: &std::collections::HashMap<String, OwnedValue>, key: &str) -> Result<u32> {
+    u32::try_from(field(dict, key)?).with_context(|| format!("'{key}' is not u32"))
+}
+
+fn as_dict(value: &OwnedValue) -> Result<std::collections::HashMap<String, OwnedValue>> {
+    std::collections::HashMap::try_from(value.try_clone()?).context("expected an a{sv} dictionary")
+}
+
+/// `trafficview history today|month`：只通过 D-Bus 查询，JSON 保留原始字节整数。
+fn history(scope: &str, iface: &str, json: bool) -> Result<()> {
+    let reply = call_daemon_reply("GetTrafficSummary", &(scope, iface))?;
+    let rx = field_u64(&reply, "rx")?;
+    let tx = field_u64(&reply, "tx")?;
+    let entries = Vec::<OwnedValue>::try_from(field(&reply, "interfaces")?.try_clone()?)
+        .context("interfaces is not an array of variants")?;
+    let mut interfaces = Vec::with_capacity(entries.len());
+    for entry in &entries {
+        let dict = as_dict(entry)?;
+        interfaces.push(serde_json::json!({
+            "stable": field_string(&dict, "stable")?,
+            "name": field_string(&dict, "name")?,
+            "rx": field_u64(&dict, "rx")?,
+            "tx": field_u64(&dict, "tx")?,
+        }));
+    }
+    let start = field_string(&reply, "start")?;
+    let end = field_string(&reply, "end")?;
+    if json {
+        let value = serde_json::json!({
+            "scope": field_string(&reply, "scope")?,
+            "start": start,
+            "end": end,
+            "rx": rx,
+            "tx": tx,
+            "interfaces": interfaces,
+        });
+        println!("{}", serde_json::to_string(&value)?);
+    } else {
+        use trafficview_core::format::format_bytes;
+        println!(
+            "{scope} {start}..{end}  rx {}  tx {}",
+            format_bytes(rx),
+            format_bytes(tx)
+        );
+        for entry in &interfaces {
+            let name = entry["name"].as_str().unwrap_or_default();
+            let stable = entry["stable"].as_str().unwrap_or_default();
+            let rx = entry["rx"].as_u64().unwrap_or(0);
+            let tx = entry["tx"].as_u64().unwrap_or(0);
+            println!(
+                "  {name} ({stable})  rx {}  tx {}",
+                format_bytes(rx),
+                format_bytes(tx)
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `trafficview interfaces`：展示稳定键与当前活跃标记。
+fn interfaces(json: bool) -> Result<()> {
+    let reply = call_daemon_reply("GetInterfaceDetails", &())?;
+    let mut names: Vec<&String> = reply.keys().collect();
+    names.sort();
+    let mut object = serde_json::Map::new();
+    for name in &names {
+        let dict = as_dict(field(&reply, name)?)?;
+        object.insert(
+            (*name).clone(),
+            serde_json::json!({
+                "stable": field_string(&dict, "stable")?,
+                "mac": field_string(&dict, "mac")?,
+                "ifindex": field_u32(&dict, "ifindex")?,
+                "operstate": field_string(&dict, "operstate")?,
+                "carrier": field_bool(&dict, "carrier")?,
+                "loopback": field_bool(&dict, "loopback")?,
+                "active": field_bool(&dict, "active")?,
+            }),
+        );
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::Value::Object(object))?
+        );
+    } else {
+        for name in &names {
+            let dict = as_dict(field(&reply, name)?)?;
+            println!(
+                "{name:<12} {:<24} {:<8} carrier={} active={}",
+                field_string(&dict, "stable")?,
+                field_string(&dict, "operstate")?,
+                field_bool(&dict, "carrier")?,
+                field_bool(&dict, "active")?,
+            );
+        }
+    }
     Ok(())
 }
 

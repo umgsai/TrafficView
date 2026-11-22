@@ -48,6 +48,8 @@ trait Daemon1 {
     fn sample(&self, snapshot: HashMap<String, OwnedValue>) -> zbus::Result<()>;
     #[zbus(signal)]
     fn config_changed(&self) -> zbus::Result<()>;
+    #[zbus(signal)]
+    fn alert(&self, level: String, code: String, message: String) -> zbus::Result<()>;
 }
 
 type ToolTip = (String, Vec<(i32, i32, Vec<u8>)>, String, String);
@@ -62,6 +64,8 @@ struct Model {
     config_path: Option<PathBuf>,
     last_icon: Vec<u8>,
     online: bool,
+    /// 最近一条仍 active 的告警 `(code, message)`。
+    alert: Option<(String, String)>,
 }
 
 impl Model {
@@ -76,7 +80,7 @@ impl Model {
     }
 
     fn tool_tip(&self) -> (String, String) {
-        match (&self.snapshot, self.online, self.paused) {
+        let (title, detail) = match (&self.snapshot, self.online, self.paused) {
             (_, false, _) => ("daemon offline; retrying".into(), String::new()),
             (_, true, true) => ("sampling paused".into(), String::new()),
             (Some(snapshot), true, false) => (
@@ -91,6 +95,10 @@ impl Model {
                 ),
             ),
             (None, true, false) => ("waiting for the first sample".into(), String::new()),
+        };
+        match &self.alert {
+            Some((_, message)) if self.online => (title, format!("{detail}\n⚠ {message}")),
+            _ => (title, detail),
         }
     }
 
@@ -98,6 +106,21 @@ impl Model {
         match &self.snapshot {
             Some(snapshot) => tray_icon(snapshot),
             None => tray_icon(&empty_snapshot()),
+        }
+    }
+
+    /// `Alert(level, code, message)` 的 `info` 级别视为恢复事件。
+    fn apply_alert(&mut self, level: &str, code: &str, message: &str) {
+        if level.eq_ignore_ascii_case("info") {
+            if self
+                .alert
+                .as_ref()
+                .is_some_and(|(active, _)| active == code)
+            {
+                self.alert = None;
+            }
+        } else {
+            self.alert = Some((code.to_owned(), message.to_owned()));
         }
     }
 }
@@ -532,6 +555,7 @@ async fn run_async() -> Result<()> {
         .context("cannot reach trafficviewd; start the daemon first")?;
     let mut samples = proxy.receive_sample().await?;
     let mut config_changes = proxy.receive_config_changed().await?;
+    let mut alerts = proxy.receive_alert().await?;
     let item_context = SignalContext::new(&connection, ITEM_PATH)?;
     let menu_context = SignalContext::new(&connection, MENU_PATH)?;
     refresh_interfaces(&proxy, &model).await;
@@ -560,6 +584,14 @@ async fn run_async() -> Result<()> {
                 refresh_interfaces(&proxy, &model).await;
                 let _ = StatusNotifierItem::new_tool_tip(&item_context).await;
                 let _ = DbusMenu::layout_updated(&menu_context, 1, 0).await;
+            }
+            Some(signal) = alerts.next() => {
+                let args = signal.args()?;
+                {
+                    let mut model = model.write().expect("tray model poisoned");
+                    model.apply_alert(&args.level, &args.code, &args.message);
+                }
+                let _ = StatusNotifierItem::new_tool_tip(&item_context).await;
             }
             _ = tokio::signal::ctrl_c() => break,
             _ = tokio::time::sleep(Duration::from_secs(1)) => {

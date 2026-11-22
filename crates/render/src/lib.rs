@@ -13,7 +13,7 @@ use tiny_skia::{Color, Paint, PathBuilder, Pixmap, PixmapPaint, Rect, Transform}
 use trafficview_core::{
     config::{Config, DisplayItem},
     format::format_rate,
-    Snapshot,
+    ColorScheme, Snapshot,
 };
 
 pub use skin::{Skin, SkinError};
@@ -67,6 +67,8 @@ pub struct RenderedFrame {
 pub struct Renderer {
     skin: Skin,
     background: Option<Pixmap>,
+    background_light: Option<Pixmap>,
+    scheme: ColorScheme,
     last_key: Option<String>,
     last_frame: Option<RenderedFrame>,
     rasterize_count: u64,
@@ -74,27 +76,19 @@ pub struct Renderer {
 
 impl Renderer {
     pub fn new(skin: Skin) -> Result<Self, SkinError> {
-        let background = match &skin.background_path {
-            Some(path) => Some(Pixmap::load_png(path).map_err(|error| {
-                SkinError::Invalid(format!(
-                    "cannot decode background '{}': {error}",
-                    path.display()
-                ))
-            })?),
-            None => None,
-        };
-        if let Some(insets) = skin.canvas.nine_patch {
-            let Some(background) = &background else {
-                return Err(SkinError::Invalid(
-                    "nine_patch requires a background PNG".into(),
-                ));
-            };
-            nine_patch::validate_insets(background.width(), background.height(), insets)
-                .map_err(SkinError::Invalid)?;
+        let background = load_background(&skin, skin.background_path.as_deref(), "background")?;
+        let background_light =
+            load_background(&skin, skin.background_light.as_deref(), "background_light")?;
+        if skin.canvas.nine_patch.is_some() && background.is_none() && background_light.is_none() {
+            return Err(SkinError::Invalid(
+                "nine_patch requires a background PNG".into(),
+            ));
         }
         Ok(Self {
             skin,
             background,
+            background_light,
+            scheme: ColorScheme::Dark,
             last_key: None,
             last_frame: None,
             rasterize_count: 0,
@@ -103,6 +97,18 @@ impl Renderer {
 
     pub fn skin(&self) -> &Skin {
         &self.skin
+    }
+
+    /// 切换主题只改变背景资源；item 几何保持不变，并强制下一帧重绘。
+    pub fn set_color_scheme(&mut self, scheme: ColorScheme) {
+        if self.scheme != scheme {
+            self.scheme = scheme;
+            self.last_key = None;
+        }
+    }
+
+    pub fn color_scheme(&self) -> ColorScheme {
+        self.scheme
     }
 
     /// 实际栅格化次数；缓存命中不增加。
@@ -131,8 +137,13 @@ impl Renderer {
 
     fn cache_key(&self, snapshot: &Snapshot, scale: f32) -> String {
         let mut key = format!(
-            "{:016x}:{scale:.4}:{:.3}:",
-            self.skin.content_hash, self.skin.canvas.opacity
+            "{:016x}:{scale:.4}:{:.3}:{}:",
+            self.skin.content_hash,
+            self.skin.canvas.opacity,
+            match self.scheme {
+                ColorScheme::Light => "light",
+                ColorScheme::Dark => "dark",
+            }
         );
         for item in &self.skin.items {
             key.push_str(&item.id);
@@ -148,13 +159,20 @@ impl Renderer {
         key
     }
 
+    fn background_for(&self) -> Option<&Pixmap> {
+        match self.scheme {
+            ColorScheme::Light => self.background_light.as_ref().or(self.background.as_ref()),
+            ColorScheme::Dark => self.background.as_ref(),
+        }
+    }
+
     fn rasterize(&self, snapshot: &Snapshot, scale: f32) -> Result<RenderedFrame, SkinError> {
         let width = ((self.skin.canvas.width as f32) * scale).round().max(1.0) as u32;
         let height = ((self.skin.canvas.height as f32) * scale).round().max(1.0) as u32;
         let mut pixmap = Pixmap::new(width, height)
             .ok_or_else(|| SkinError::Invalid("canvas size must not be zero".into()))?;
 
-        if let Some(background) = &self.background {
+        if let Some(background) = self.background_for() {
             let scaled = match self.skin.canvas.nine_patch {
                 Some(insets) => nine_patch::scale_nine_patch(background, insets, width, height)
                     .map_err(SkinError::Invalid)?,
@@ -235,6 +253,27 @@ impl Renderer {
             regions,
         })
     }
+}
+
+fn load_background(
+    skin: &Skin,
+    path: Option<&std::path::Path>,
+    label: &str,
+) -> Result<Option<Pixmap>, SkinError> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let pixmap = Pixmap::load_png(path).map_err(|error| {
+        SkinError::Invalid(format!(
+            "cannot decode {label} '{}': {error}",
+            path.display()
+        ))
+    })?;
+    if let Some(insets) = skin.canvas.nine_patch {
+        nine_patch::validate_insets(pixmap.width(), pixmap.height(), insets)
+            .map_err(SkinError::Invalid)?;
+    }
+    Ok(Some(pixmap))
 }
 
 /// 将 `RenderedFrame`（BGRA 预乘）编码为 PNG 字节，供离屏预览使用。
@@ -383,14 +422,27 @@ fn context() -> &'static Mutex<RenderContext> {
 }
 
 pub fn render(snapshot: &Snapshot, config: &Config, dpi: u32) -> RenderedFrame {
+    render_with_scheme(snapshot, config, dpi, ColorScheme::Dark)
+}
+
+/// 固定布局渲染；主题只影响背景与缓存键，落点几何不变。
+pub fn render_with_scheme(
+    snapshot: &Snapshot,
+    config: &Config,
+    dpi: u32,
+    scheme: ColorScheme,
+) -> RenderedFrame {
     let layout = layout(&config.overlay.items, snapshot, dpi);
-    let cache_key = cache_key(snapshot, config, dpi);
+    let cache_key = cache_key(snapshot, config, dpi, scheme);
     let mut pixmap = Pixmap::new(layout.width, layout.height).expect("non-zero overlay size");
     pixmap.fill(Color::TRANSPARENT);
 
     let opacity = config.overlay.opacity.clamp(0.0, 1.0);
     let mut paint = Paint::default();
-    paint.set_color_rgba8(16, 18, 22, 255);
+    match scheme {
+        ColorScheme::Dark => paint.set_color_rgba8(16, 18, 22, 255),
+        ColorScheme::Light => paint.set_color_rgba8(242, 244, 248, 255),
+    }
     paint.anti_alias = true;
     let mut builder = PathBuilder::new();
     let radius = 8.0 * layout.scale;
@@ -484,9 +536,16 @@ pub fn render(snapshot: &Snapshot, config: &Config, dpi: u32) -> RenderedFrame {
     }
 }
 
-fn cache_key(snapshot: &Snapshot, config: &Config, dpi: u32) -> String {
+fn cache_key(snapshot: &Snapshot, config: &Config, dpi: u32, scheme: ColorScheme) -> String {
     let mut key = String::new();
-    key.push_str(&format!("{dpi}:{:.3}:", config.overlay.opacity));
+    key.push_str(&format!(
+        "{dpi}:{:.3}:{}:",
+        config.overlay.opacity,
+        match scheme {
+            ColorScheme::Light => "light",
+            ColorScheme::Dark => "dark",
+        }
+    ));
     for item in &config.overlay.items {
         key.push_str(&item.id);
         key.push('=');

@@ -7,11 +7,13 @@ use std::{
     sync::Arc,
 };
 
+use chrono::Utc;
 use tokio::sync::RwLock;
 use tracing::warn;
 use trafficview_core::{
     config::{ConfigStore, SAMPLE_INTERVAL_MAX_MS, SAMPLE_INTERVAL_MIN_MS},
-    CpuSample, DiskSample, GpuSample, MemSample, NetSample, Snapshot, TempSample,
+    CpuSample, DiskSample, GpuSample, InterfaceInfo, MemSample, NetSample, Snapshot, TempSample,
+    TrafficSummary,
 };
 use zbus::{
     object_server::SignalContext,
@@ -59,6 +61,12 @@ impl Daemon1 {
         self.state.read().await.config.active_interface.clone()
     }
 
+    /// M3 新增只读属性：`light` 或 `dark`，由 portal 与用户配置共同决定。
+    #[zbus(property)]
+    async fn color_scheme(&self) -> String {
+        crate::theme::scheme_name(self.state.read().await.color_scheme).to_owned()
+    }
+
     async fn get_snapshot(&self) -> zbus::fdo::Result<HashMap<String, OwnedValue>> {
         let state = self.state.read().await;
         if state.paused {
@@ -69,6 +77,41 @@ impl Daemon1 {
             .as_ref()
             .ok_or_else(|| zbus::fdo::Error::Failed("no sample available yet".into()))?;
         Ok(snapshot_to_dbus(snapshot))
+    }
+
+    /// M3 新增：按日/月查询历史。`iface_stable` 为空表示所有网卡求和。
+    async fn get_traffic_summary(
+        &self,
+        scope: &str,
+        iface_stable: &str,
+    ) -> zbus::fdo::Result<HashMap<String, OwnedValue>> {
+        if !matches!(scope, "day" | "month") {
+            return Err(zbus::fdo::Error::InvalidArgs(format!(
+                "unsupported scope '{scope}'; use day or month"
+            )));
+        }
+        let history = self.state.read().await.history.clone();
+        let Some(history) = history else {
+            return Err(zbus::fdo::Error::Failed(
+                "traffic history is unavailable".into(),
+            ));
+        };
+        let stable = (!iface_stable.is_empty()).then_some(iface_stable);
+        let summary = {
+            let store = history
+                .lock()
+                .map_err(|_| zbus::fdo::Error::Failed("history mutex is poisoned".into()))?;
+            store
+                .summary(scope, stable, Utc::now())
+                .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?
+        };
+        Ok(traffic_summary_to_dbus(&summary))
+    }
+
+    /// M3 新增：网卡详情；键为接口名，值为 `a{sv}`。原 `Interfaces` 属性保持兼容。
+    async fn get_interface_details(&self) -> HashMap<String, OwnedValue> {
+        let state = self.state.read().await;
+        interface_details_to_dbus(&state.interface_details, state.active_stable.as_deref())
     }
 
     async fn set_active_interface(
@@ -136,7 +179,15 @@ impl Daemon1 {
                 config.active_interface
             )));
         }
-        self.state.write().await.config = config;
+        let rules = config.alerts.rules.clone();
+        {
+            let mut state = self.state.write().await;
+            state.config = config;
+            state.color_scheme = crate::theme::decide(state.config.theme, state.portal_scheme);
+            if let Ok(mut engine) = state.alerts.lock() {
+                engine.reload(&rules);
+            };
+        }
         let _ = Daemon1::config_changed(&context).await;
         Ok(())
     }
@@ -272,6 +323,55 @@ fn plugin_value(plugin: &BTreeMap<String, String>) -> Value<'static> {
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
     Value::from(map)
+}
+
+/// `GetTrafficSummary` 的固定返回键：scope/start/end/rx/tx/interfaces。
+pub fn traffic_summary_to_dbus(summary: &TrafficSummary) -> HashMap<String, OwnedValue> {
+    let interfaces = summary
+        .interfaces
+        .iter()
+        .map(|iface| {
+            let mut map: HashMap<String, Value<'static>> = HashMap::new();
+            map.insert("stable".into(), Value::from(iface.stable.clone()));
+            map.insert("name".into(), Value::from(iface.name.clone()));
+            map.insert("rx".into(), Value::from(iface.rx));
+            map.insert("tx".into(), Value::from(iface.tx));
+            Value::from(map)
+        })
+        .collect::<Vec<Value<'static>>>();
+    let mut top: HashMap<String, OwnedValue> = HashMap::new();
+    top.insert("scope".into(), owned(Value::from(summary.scope.clone())));
+    top.insert("start".into(), owned(Value::from(summary.start.clone())));
+    top.insert("end".into(), owned(Value::from(summary.end.clone())));
+    top.insert("rx".into(), owned(Value::from(summary.rx)));
+    top.insert("tx".into(), owned(Value::from(summary.tx)));
+    top.insert("interfaces".into(), owned(Value::from(interfaces)));
+    top
+}
+
+fn interface_details_to_dbus(
+    details: &[InterfaceInfo],
+    active_stable: Option<&str>,
+) -> HashMap<String, OwnedValue> {
+    let mut map: HashMap<String, OwnedValue> = HashMap::new();
+    for iface in details {
+        let mut entry: HashMap<String, Value<'static>> = HashMap::new();
+        entry.insert("stable".into(), Value::from(iface.stable.clone()));
+        entry.insert(
+            "mac".into(),
+            Value::from(iface.mac.clone().unwrap_or_default()),
+        );
+        entry.insert("ifindex".into(), Value::from(iface.ifindex));
+        entry.insert("operstate".into(), Value::from(iface.operstate.clone()));
+        entry.insert("carrier".into(), Value::from(iface.carrier));
+        entry.insert("loopback".into(), Value::from(iface.is_loopback));
+        entry.insert(
+            "active".into(),
+            Value::from(active_stable == Some(iface.stable.as_str())),
+        );
+        map.insert(iface.name.clone(), owned(Value::from(entry)));
+    }
+    map
 }
 
 /// 从 D-Bus 字典还原 `Snapshot`；省略的 disk/gpu 保持 `None`。

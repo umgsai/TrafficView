@@ -30,6 +30,21 @@ pub fn format_bit_rate(bytes_per_sec: u64) -> String {
     format!("{value:.1} {}/s", UNITS[unit])
 }
 
+/// 按 1024 进制格式化字节总量（无 `/s`），用于历史汇总。
+pub fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    format!("{value:.1} {}", UNITS[unit])
+}
+
 pub fn counter_rate(previous: u64, current: u64, elapsed: Duration) -> Option<u64> {
     if elapsed.is_zero() || elapsed > Duration::from_secs(5) || current < previous {
         return None;
@@ -48,6 +63,13 @@ mod tests {
         assert_eq!(format_rate(1023), "1023 B/s");
         assert_eq!(format_rate(1024), "1.0 KB/s");
         assert_eq!(format_rate(1_572_864), "1.5 MB/s");
+    }
+
+    #[test]
+    fn formats_byte_totals() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(1024), "1.0 KB");
+        assert_eq!(format_bytes(1_572_864), "1.5 MB");
     }
 
     #[test]

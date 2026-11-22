@@ -143,7 +143,11 @@ impl HistoryStore {
             })
     }
 
-    fn finish(conn: Connection, offset_minutes: i32, retention_days: u32) -> Result<Self, HistoryError> {
+    fn finish(
+        conn: Connection,
+        offset_minutes: i32,
+        retention_days: u32,
+    ) -> Result<Self, HistoryError> {
         conn.busy_timeout(Duration::from_millis(5000))?;
         // WAL 对内存库返回 memory，不视为错误。
         let _: String = conn.query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))?;
@@ -163,11 +167,7 @@ impl HistoryStore {
     }
 
     /// 稳定键优先为 MAC；同 MAC 改名时更新展示名并保留同一历史行。
-    pub fn upsert_interface(
-        &mut self,
-        stable: &str,
-        name: &str,
-    ) -> Result<i64, HistoryError> {
+    pub fn upsert_interface(&mut self, stable: &str, name: &str) -> Result<i64, HistoryError> {
         let id = self.conn.query_row(
             "INSERT INTO iface(stable, name) VALUES(?1, ?2)
              ON CONFLICT(stable) DO UPDATE SET name=excluded.name
@@ -199,9 +199,7 @@ impl HistoryStore {
         let (last_rx, last_tx) =
             cursor.ok_or_else(|| HistoryError::Schema(format!("interface id {id} not found")))?;
         let (delta_rx, delta_tx) = match (last_rx, last_tx) {
-            (Some(previous_rx), Some(previous_tx))
-                if rx >= previous_rx && tx >= previous_tx =>
-            {
+            (Some(previous_rx), Some(previous_tx)) if rx >= previous_rx && tx >= previous_tx => {
                 (rx - previous_rx, tx - previous_tx)
             }
             _ => (0, 0),
@@ -452,7 +450,9 @@ fn to_i64(value: u64, label: &str) -> Result<i64, HistoryError> {
 
 fn from_i64(value: i64, label: &str) -> Result<u64, HistoryError> {
     u64::try_from(value).map_err(|_| {
-        HistoryError::Overflow(format!("stored {label} value {value} is negative or too large"))
+        HistoryError::Overflow(format!(
+            "stored {label} value {value} is negative or too large"
+        ))
     })
 }
 

@@ -39,6 +39,8 @@ pub struct Skin {
     pub base_dir: PathBuf,
     #[serde(skip)]
     pub background_path: Option<PathBuf>,
+    #[serde(skip)]
+    pub background_light: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -65,6 +67,8 @@ pub struct Canvas {
     pub width: u32,
     pub height: u32,
     pub background: Option<String>,
+    /// 浅色主题背景；缺省时沿用 `background`。
+    pub background_light: Option<String>,
     pub background_color: Option<String>,
     /// `[left, top, right, bottom]` 九宫格边距。
     pub nine_patch: Option<[u32; 4]>,
@@ -78,6 +82,7 @@ impl Default for Canvas {
             width: 240,
             height: 80,
             background: None,
+            background_light: None,
             background_color: None,
             nine_patch: None,
             opacity: 1.0,
@@ -248,6 +253,31 @@ impl Skin {
             skin.content_hash = fnv1a(&bytes, skin.content_hash);
             skin.background_path = Some(resolved);
         }
+        if let Some(background) = skin.canvas.background_light.clone() {
+            let resolved = skin.background_light.clone().ok_or_else(|| {
+                SkinError::Invalid(format!(
+                    "background_light '{background}' is outside skin directory"
+                ))
+            })?;
+            let bytes = fs::read(&resolved).map_err(|error| {
+                SkinError::Invalid(format!(
+                    "cannot read background_light '{}': {error}",
+                    resolved.display()
+                ))
+            })?;
+            let pixmap = tiny_skia::Pixmap::decode_png(&bytes).map_err(|error| {
+                SkinError::Invalid(format!(
+                    "background_light '{}' is not a valid PNG: {error}",
+                    resolved.display()
+                ))
+            })?;
+            if let Some(insets) = skin.canvas.nine_patch {
+                crate::nine_patch::validate_insets(pixmap.width(), pixmap.height(), insets)
+                    .map_err(SkinError::Invalid)?;
+            }
+            skin.content_hash = fnv1a(&bytes, skin.content_hash);
+            skin.background_light = Some(resolved);
+        }
         Ok(skin)
     }
 
@@ -269,6 +299,9 @@ impl Skin {
         }
         if let Some(background) = skin.canvas.background.as_deref() {
             skin.background_path = Some(resolve_asset(&skin.base_dir, background)?);
+        }
+        if let Some(background) = skin.canvas.background_light.as_deref() {
+            skin.background_light = Some(resolve_asset(&skin.base_dir, background)?);
         }
         if let Some(color) = skin.canvas.background_color.as_deref() {
             if !is_valid_color(color) {
