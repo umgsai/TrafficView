@@ -39,7 +39,7 @@
 - Create: `crates/daemon/tests/history.rs`
 - Modify: `crates/core/src/config.rs`
 
-- [ ] **Step 1: 写建库、累计和重置失败测试**
+- [x] **Step 1: 写建库、累计和重置失败测试**
 
 ```rust
 #[test]
@@ -66,13 +66,13 @@ fn counter_reset_rebases_without_negative_or_duplicate_totals() {
 
 另写测试：同一进程重启后从持久化游标继续；计数器相等不写增量；同一分钟 UPSERT 不重复；`PRAGMA user_version` 重开不重复迁移；非法 schema 版本返回可诊断错误。
 
-- [ ] **Step 2: 确认失败**
+- [x] **Step 2: 确认失败**
 
 Run: `cargo test -p trafficview-daemon --test history`
 
 Expected: FAIL，`HistoryStore` 未定义。
 
-- [ ] **Step 3: 实现调研 schema 与累计算法**
+- [x] **Step 3: 实现调研 schema 与累计算法**
 
 执行以下 v1 schema，并设置 `PRAGMA journal_mode=WAL`、`foreign_keys=ON`、`busy_timeout=5000`：
 
@@ -107,13 +107,13 @@ PRAGMA user_version=1;
 
 每分钟时间戳使用 UTC Unix 秒且向下取整到 60 秒；日键按用户配置时区生成，默认系统本地时区。`history.retention_days=90` 默认保留 90 天明细，日汇总不随明细清理而删除。
 
-- [ ] **Step 4: 验证数据库语义**
+- [x] **Step 4: 验证数据库语义**
 
 Run: `cargo test -p trafficview-daemon --test history && cargo test -p trafficview-daemon`
 
 Expected: 全部 PASS；测试重复打开同一数据库不出现锁死或重复累计。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/daemon/src/history.rs crates/daemon/tests/history.rs crates/core/src/config.rs Cargo.lock
@@ -129,7 +129,7 @@ git commit -m "feat: persist per-interface traffic history in SQLite"
 - Modify: `crates/cli/src/main.rs`
 - Modify: `crates/daemon/tests/history.rs`
 
-- [ ] **Step 1: 写 daemon 重启和 D-Bus 查询失败测试**
+- [x] **Step 1: 写 daemon 重启和 D-Bus 查询失败测试**
 
 集成测试使用临时 XDG data 目录和固定网卡 fixture：采样两个周期 → 停 daemon → 推进原始计数器 → 重启 → 再采样。断言历史只增加所有非负差值一次，速率首帧仍重新建立单调时钟基线。D-Bus 测试调用：
 
@@ -139,13 +139,13 @@ GetTrafficSummary(scope="day"|"month", iface_stable="") -> a{sv}
 
 返回键固定为 `scope/start/end/rx/tx/interfaces`；`interfaces` 为各网卡分解，空 stable 表示所有网卡求和。无效 scope 返回 D-Bus error，不能默认变成全部历史。
 
-- [ ] **Step 2: 确认失败**
+- [x] **Step 2: 确认失败**
 
 Run: `dbus-run-session -- cargo test -p trafficview-daemon --test history`
 
 Expected: FAIL，daemon 尚未接入 store 和查询方法。
 
-- [ ] **Step 3: 实现接入和 CLI**
+- [x] **Step 3: 实现接入和 CLI**
 
 数据库路径为 `$XDG_DATA_HOME/trafficview/history.db`，未设置时使用 `$HOME/.local/share/trafficview/history.db`。每个原始计数器采样都调用 `observe`，由 `observe` 在同一个短事务中 UPSERT 当前分钟、当天和游标，因此干净退出无需额外 flush；每分钟只保留一行并不意味着延迟到分钟末才写盘。`add_delta` 是 `observe` 复用的事务辅助函数。每天首次采样时清理 90 天前 `traffic_min`，避免每秒执行 retention。
 
@@ -159,13 +159,13 @@ trafficview history month [--iface <stable>] [--json]
 
 人类可读输出使用 1024 进制，`--json` 保留原始字节整数和 stable/name，不能先格式化再解析。
 
-- [ ] **Step 4: 验证跨重启和并发消费者**
+- [x] **Step 4: 验证跨重启和并发消费者**
 
 Run: `dbus-run-session -- cargo test -p trafficview-daemon --test history && cargo test --workspace`
 
 Expected: 全部 PASS；CLI 查询与直接 SQLite 求和一致，前端查询期间采样线程不会被长时间阻塞。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/daemon crates/core/src/lib.rs crates/cli/src/main.rs
@@ -186,7 +186,7 @@ git commit -m "feat: expose daily and monthly traffic summaries"
 - Modify: `crates/daemon/src/service.rs`
 - Modify: `crates/daemon/src/dbus.rs`
 
-- [ ] **Step 1: 写选择策略失败测试**
+- [x] **Step 1: 写选择策略失败测试**
 
 ```rust
 #[test]
@@ -213,13 +213,13 @@ fn whitelist_overrides_blacklist_and_hotplug_rebases() {
 
 补充接口消失、默认路由变化、全部 down、只有黑名单网卡、MAC 重命名和 USB 热插拔重建基线测试。netlink fixture 验证只采用 `IFLA_STATS64`，缺少 64 位属性时回退 procfs，不混用 32 位计数器。另在 `smoothing.rs` 写三点平均 `[100,200,300] -> 200`、EMA(0.3) 对 `[100,0] -> 70`、首帧不补零和配置 none 原样透传测试。
 
-- [ ] **Step 2: 确认失败**
+- [x] **Step 2: 确认失败**
 
 Run: `cargo test -p trafficview-daemon --test network && cargo test -p trafficview-collectors netlink:: && cargo test -p trafficview-core smoothing::`
 
 Expected: FAIL，`NetSelector`、netlink 主数据源与平滑器尚未定义。
 
-- [ ] **Step 3: 实现发现、选择和 netlink 事件**
+- [x] **Step 3: 实现发现、选择和 netlink 事件**
 
 从 `/sys/class/net/*` 读取 name、ifindex、MAC、operstate、carrier、type；采集器增加 `sample_all()`，优先用一次 rtnetlink `RTM_GETLINK` 请求读取全部接口的 `IFLA_STATS64`，失败或缺属性时才一次解析所有 `/proc/net/dev` 行，保留每卡原始计数器和速率。配置 `network_smoothing=none|moving_average_3|ema` 默认 none；EMA 固定 alpha=0.3，只处理有效网络速率帧且只影响展示快照，历史 `observe` 始终使用未平滑的原始计数器。选择顺序严格为：
 
@@ -236,7 +236,7 @@ Run: `cargo test -p trafficview-daemon --test network && cargo test --workspace`
 
 Expected: 全部 PASS。真实 Linux 上禁用/启用非默认测试网卡或切换 WiFi，托盘列表在一个采样周期后更新，无旧网卡速率尖峰；历史仍归入相同 MAC 的 stable id。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/daemon/src/network.rs crates/daemon/tests/network.rs crates/daemon/src/service.rs crates/daemon/src/dbus.rs crates/collectors/src/net.rs crates/collectors/src/netlink.rs crates/collectors/src/lib.rs crates/core/src/smoothing.rs crates/core/src/lib.rs crates/core/src/config.rs
@@ -254,7 +254,7 @@ git commit -m "feat: select and track Linux network interfaces"
 - Modify: `crates/tray/src/lib.rs`
 - Modify: `crates/render/src/lib.rs`
 
-- [ ] **Step 1: 写持续时间、冷却和静默时段失败测试**
+- [x] **Step 1: 写持续时间、冷却和静默时段失败测试**
 
 ```rust
 #[test]
@@ -277,25 +277,25 @@ fn recovery_rearms_rule_and_quiet_hours_delay_notification() {
 
 测试覆盖 `net.up/net.down/cpu.high/mem.high/month.quota/net.disconnected`、冷却边界、跨午夜静默时段、配置 reload 清理不再存在的规则。状态机事件与通知发送分离，以便测试不依赖桌面。
 
-- [ ] **Step 2: 确认失败**
+- [x] **Step 2: 确认失败**
 
 Run: `cargo test -p trafficview-daemon --test alerts`
 
 Expected: FAIL，`AlertEngine` 未实现。
 
-- [ ] **Step 3: 实现规则与通知适配器**
+- [x] **Step 3: 实现规则与通知适配器**
 
 配置结构每条规则包含 `enabled/metric/op/threshold/duration_s/cooldown_s/quiet_hours`。默认仅启用示例为全部 disabled，避免升级后突然打扰；月配额单位字节。指标连续达到条件才进入 active，恢复后清除持续计数；active 期间不重复通知，恢复后再次触发仍受 cooldown 限制。静默时段内事件更新状态但延迟通知，时段结束只发送仍 active 的最新一条。
 
 通知适配器调用 `org.freedesktop.Notifications`，无服务时记 warning 且仍发送 D-Bus `Alert(level,code,message)`。托盘将最近告警显示在 tooltip，overlay 将对应 item 置为告警色；恢复事件清除颜色。告警逻辑不读取或修改渲染配置。
 
-- [ ] **Step 4: 验证**
+- [x] **Step 4: 验证**
 
 Run: `cargo test -p trafficview-daemon --test alerts && cargo test --workspace`
 
 Expected: 全部 PASS。真实桌面连续超阈值只出现一次通知，恢复后图标复原，无通知服务时 daemon 不退出。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/daemon/src/alerts.rs crates/daemon/tests/alerts.rs crates/core/src/config.rs crates/daemon/src/service.rs crates/daemon/src/dbus.rs crates/tray crates/render
@@ -312,11 +312,11 @@ git commit -m "feat: add sustained metric alerts and desktop notifications"
 - Modify: `crates/ui-x11/src/lib.rs`
 - Modify: `crates/ui-wayland/src/lib.rs`
 
-- [ ] **Step 1: 写主题决策失败测试**
+- [x] **Step 1: 写主题决策失败测试**
 
 覆盖 `theme=light/dark/auto`、portal 返回 0/1/2、portal 不存在、light 背景缺失时回退默认背景、主题切换使 cache key 改变。portal 信号测试确保旧连接断开后不响应过期事件。
 
-- [ ] **Step 2: 确认失败并实现 portal 订阅**
+- [x] **Step 2: 确认失败并实现 portal 订阅**
 
 Run: `cargo test -p trafficview-daemon theme:: && cargo test -p trafficview-render theme`
 
@@ -324,7 +324,7 @@ Expected: 先 FAIL。通过 `org.freedesktop.portal.Settings` 读取 `org.freede
 
 皮肤 `[canvas]` 增加可选 `background_light`；切换主题只改变渲染资源，不改变 item rect。X11/Wayland 收到配置变化后用新主题重绘，即使采样文本没变。
 
-- [ ] **Step 3: 运行完整质量门**
+- [x] **Step 3: 运行完整质量门**
 
 ```bash
 cargo fmt --all -- --check
@@ -342,7 +342,7 @@ Expected: 全部退出码为 0。
 
 Expected: 日汇总不重复且计数器 reset 不产生巨大值；恢复首帧无速率尖峰；90 天前分钟明细被清理而日汇总保留；两个图形前端在同一配置周期切换主题；portal 不可用时保持可读默认皮肤。
 
-- [ ] **Step 5: 提交并关闭 M3**
+- [x] **Step 5: 提交并关闭 M3**
 
 ```bash
 git add crates/daemon/src/theme.rs crates/core/src/config.rs crates/render crates/ui-x11 crates/ui-wayland
@@ -396,4 +396,8 @@ M3 完成条件：数据库、告警、网络 fixture 测试全部通过，真�
 - 桌面通知仅验证“通知服务收到 Notify 且内容正确”，弹窗外观未人工确认。
 - Wayland/GNOME 的真实主题重绘与告警变色未在对应会话验收（本机无该会话）；
   当前只有编译、离屏渲染及前端单元测试证据。
+
+收尾结论（2026-11-22）：除上述环境限制项外，M3 各任务已勾选；Task 3 Step 4
+（真实热插拔）与 Task 5 Step 4（重启/休眠）因本机权限与验收条件不足保持未勾选，
+不计入已验收范围。
 
