@@ -343,3 +343,35 @@ git commit -m "feat: integrate Plasma and scriptable status panels"
 ```
 
 M2 完成条件：原生皮肤预览与 X11/Wayland 实际渲染一致，KDE/Wayland、GNOME/Wayland、waybar 三条路径均通过真实会话验收，且 M1 所有回归测试继续通过。
+
+## 执行记录
+
+### 2026-11-22 · Cinnamon/X11 桌面验收
+
+环境：VirtualBox 虚拟机 + Cinnamon（X11，单显示器 1920×1080）。以下各项目均为实机操作，
+通过 D-Bus 调用、X 窗口属性和截图取证。
+
+| 验收项 | 结果 |
+| --- | --- |
+| 托盘菜单 Pause/Resume | 通过；暂停时标题显示 paused，菜单标签切换为 Resume |
+| 托盘菜单 显示/隐藏悬浮窗 | 通过；窗口 Map State 在 IsViewable/IsUnMapped 间切换 |
+| 网卡子菜单 自动/指定网卡 | 通过；`ActiveInterface` 属性与配置同步变化 |
+| 托盘菜单 打开配置 | 通过；`xdg-open` 打开 config.toml |
+| 托盘菜单 退出 | 通过；daemon、托盘、悬浮窗全部退出且无残留窗口 |
+| 悬浮窗位置热更新 | 通过；`xwininfo` 绝对坐标随配置变化 |
+| 悬浮窗透明度热更新 | 通过；截图区域平均亮度 44.5 → 195.8（0.9 → 0.2） |
+| 悬浮窗穿透 | 通过；X Shape 输入区域 1 个矩形 ↔ 0 个矩形 |
+| 皮肤热切换 | 通过；目录皮肤切换后窗口尺寸 220×112 → 220×80 |
+| 无效皮肤路径 | 通过（降级）；保留默认皮肤并打印原因，进程不退出 |
+| 设置窗口保存 | 通过；写入 daemon 并提示“已保存”，配置与属性同步 |
+| 设置窗口反向同步 | 通过；外部 `UpdateConfig` 后界面数值自动刷新 |
+| 断连降级 | 通过；daemon 退出后显示重连横幅、禁用控件，无提权入口 |
+| 自动重连 | 通过；daemon 重启后横幅消失、控件恢复 |
+| 开机自启动 | 通过；切换后写入/删除 `~/.config/autostart/trafficview.desktop` |
+
+本轮验收同时修复了三个缺陷：托盘未实现 `EventGroup` 导致点击被丢弃、悬浮窗不响应
+配置热加载与 daemon 退出后残留、设置窗口保存失败（“自动选择”文案被当作网卡名提交）
+且空闲时无法感知断连。
+
+未完成：KDE Plasma 6/Wayland、GNOME 45+/Wayland、Sway/Hyprland + waybar 三条路径
+需要对应桌面环境，本机无法覆盖，因此 M2 完成条件尚未满足。
