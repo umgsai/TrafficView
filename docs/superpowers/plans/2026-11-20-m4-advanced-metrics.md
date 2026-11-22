@@ -51,7 +51,7 @@
 - Modify: `crates/daemon/src/service.rs`
 - Modify: `crates/daemon/src/dbus.rs`
 
-- [ ] **Step 1: 写解析、差分和设备过滤失败测试**
+- [x] **Step 1: 写解析、差分和设备过滤失败测试**
 
 磁盘 fixture 验证扇区×512、首帧 None、计数器 reset None、`dt>5s` None，过滤 `loop/ram/sr` 和分区，只聚合整盘。uptime fixture 验证 `/proc/uptime` 第一个浮点字段转换为非负 `uptime_s`，倒退或非法值返回 None。CPU fixture 验证 kHz→MHz、部分 cpufreq 文件不可读时返回可用核平均、`loadavg` 三个浮点数。hwmon fixture 验证 `coretemp/k10temp` 名称、label、毫摄氏度转换、非有限值和超出 -50–150°C 的读数被拒绝。电池 fixture 验证多 BAT 按容量加权、无电池返回 None。
 
@@ -66,13 +66,13 @@ fn diskstats_uses_512_byte_sectors_and_whole_disks() {
 }
 ```
 
-- [ ] **Step 2: 确认失败**
+- [x] **Step 2: 确认失败**
 
 Run: `cargo test -p trafficview-collectors disk:: && cargo test -p trafficview-collectors hwmon:: && cargo test -p trafficview-collectors power:: && cargo test -p trafficview-collectors uptime:: && cargo test -p trafficview-collectors cpu::`
 
 Expected: FAIL，新增模块未实现。
 
-- [ ] **Step 3: 实现采集器和快照可用性**
+- [x] **Step 3: 实现采集器和快照可用性**
 
 `disk` 保持 M1 的聚合 `DiskSample { read_bps, write_bps }` 语义；新增可选 `filesystems: Vec<FilesystemSample>` 键提供 mount/total/available/used_pct，statvfs 失败只省略该挂载点。默认挂载点只含 `/`，用户可配置额外路径，排除重复设备重复累计。
 
@@ -80,13 +80,13 @@ Expected: FAIL，新增模块未实现。
 
 所有新字段加入 D-Bus 字典时遵循“增加可选键、不改旧键”；未采集的结构省略对应键，采集器可用但列表确实为空时才使用空列表，CLI JSON 将省略结构映射为 null。另提供只读 `CollectorStatus(a{sv})`，值包含 `available` 和 `reason`，让设置界面能区分零值、空列表与不可用。
 
-- [ ] **Step 4: 验证**
+- [x] **Step 4: 验证**
 
 Run: `cargo test -p trafficview-collectors && cargo test --workspace`
 
 Expected: 全部 PASS；无电池、无 cpufreq 权限或挂载点消失时其他采样仍更新，D-Bus v1 旧键测试不变。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/collectors crates/core/src/lib.rs crates/daemon/src/service.rs crates/daemon/src/dbus.rs Cargo.lock
@@ -335,3 +335,22 @@ git commit -m "feat: add optional GTK settings frontend"
 ```
 
 M4 完成条件：所有默认可测试能力通过，实际存在的 GPU/eBPF 硬件完成实测，不存在的平台明确标记未实测；所有可选能力关闭时产品仍等同 M3 且性能无回归。
+
+---
+
+## 执行记录（2026-11-22，本机 VirtualBox / Cinnamon X11）
+
+Task 1 已完成并以真实输出验证：
+
+- 新增测试先失败（36 个编译错误），实现后 `cargo test -p trafficview-collectors`
+  27 项、`cargo test -p trafficview-core` 16 项通过。
+- `dbus-run-session -- cargo test --workspace` 全部通过；`cargo fmt --all -- --check`、
+  `cargo clippy --workspace --all-targets -- -D warnings` 与 release 构建均通过。
+- release daemon 重启后 `GetSnapshot` 实际包含 `disk`、`filesystems`、`uptime_s`
+  与 `cpu.load`（也包含 `cpu.freq_mhz` 的缺省省略）；`CollectorStatus` 返回
+  `disk/filesystems/uptime/loadavg` 可用，`battery/temps/cpufreq` 不可用及原因。
+- 本机无电池；`/sys/class/hwmon/hwmon0` 实际是 AC 适配器，没有温度输入；
+  `/sys/devices/system/cpu/cpufreq` 为空。三项均按 `available=false` + 原因降级，
+  未伪造零值。
+- Ruling：额外挂载点配置暂不做，先固定 `/`，留到 Task 5 的配置 API；
+  代价是 Task 1 期间只能用默认挂载点，设置界面实现时补齐。

@@ -12,8 +12,8 @@ use tokio::sync::RwLock;
 use tracing::warn;
 use trafficview_core::{
     config::{ConfigStore, SAMPLE_INTERVAL_MAX_MS, SAMPLE_INTERVAL_MIN_MS},
-    CpuSample, DiskSample, GpuSample, InterfaceInfo, MemSample, NetSample, Snapshot, TempSample,
-    TrafficSummary,
+    BatterySample, CpuSample, DiskSample, FilesystemSample, GpuSample, InterfaceInfo, MemSample,
+    NetSample, Snapshot, TempSample, TrafficSummary,
 };
 use zbus::{
     object_server::SignalContext,
@@ -65,6 +65,23 @@ impl Daemon1 {
     #[zbus(property)]
     async fn color_scheme(&self) -> String {
         crate::theme::scheme_name(self.state.read().await.color_scheme).to_owned()
+    }
+
+    /// M4 新增只读属性：各采集器的可用性；值含 `available` 与 `reason`。
+    #[zbus(property(emits_changed_signal = "false"))]
+    async fn collector_status(&self) -> HashMap<String, OwnedValue> {
+        self.state
+            .read()
+            .await
+            .collector_status
+            .iter()
+            .map(|(name, status)| {
+                let mut entry: HashMap<String, Value<'static>> = HashMap::new();
+                entry.insert("available".into(), Value::from(status.available));
+                entry.insert("reason".into(), Value::from(status.reason.clone()));
+                (name.clone(), owned(Value::from(entry)))
+            })
+            .collect()
     }
 
     async fn get_snapshot(&self) -> zbus::fdo::Result<HashMap<String, OwnedValue>> {
@@ -290,8 +307,41 @@ pub fn snapshot_to_dbus(snapshot: &Snapshot) -> HashMap<String, OwnedValue> {
                 .collect::<Vec<Value<'static>>>(),
         )),
     );
+    if let Some(filesystems) = &snapshot.filesystems {
+        top.insert(
+            "filesystems".into(),
+            owned(Value::from(
+                filesystems
+                    .iter()
+                    .map(filesystem_value)
+                    .collect::<Vec<Value<'static>>>(),
+            )),
+        );
+    }
+    if let Some(battery) = &snapshot.battery {
+        top.insert("battery".into(), owned(battery_value(battery)));
+    }
+    if let Some(uptime_s) = snapshot.uptime_s {
+        top.insert("uptime_s".into(), owned(Value::from(uptime_s)));
+    }
     top.insert("plugin".into(), owned(plugin_value(&snapshot.plugin)));
     top
+}
+
+fn filesystem_value(sample: &FilesystemSample) -> Value<'static> {
+    let mut map: HashMap<String, Value<'static>> = HashMap::new();
+    map.insert("mount".into(), Value::from(sample.mount.clone()));
+    map.insert("total".into(), Value::from(sample.total));
+    map.insert("available".into(), Value::from(sample.available));
+    map.insert("used_pct".into(), Value::from(sample.used_pct));
+    Value::from(map)
+}
+
+fn battery_value(sample: &BatterySample) -> Value<'static> {
+    let mut map: HashMap<String, Value<'static>> = HashMap::new();
+    map.insert("percent".into(), Value::from(sample.percent));
+    map.insert("status".into(), Value::from(sample.status.clone()));
+    Value::from(map)
 }
 
 fn disk_value(sample: &DiskSample) -> Value<'static> {
@@ -453,6 +503,37 @@ pub fn snapshot_from_dbus(dict: &HashMap<String, OwnedValue>) -> anyhow::Result<
             });
         }
     }
+    let filesystems = dict
+        .get("filesystems")
+        .map(|value| -> anyhow::Result<Vec<FilesystemSample>> {
+            let entries: Vec<HashMap<String, OwnedValue>> = value.try_clone()?.try_into()?;
+            entries
+                .into_iter()
+                .map(|entry| {
+                    Ok(FilesystemSample {
+                        mount: string(&entry, "mount")?,
+                        total: u64::try_from(required(&entry, "total")?.try_clone()?)?,
+                        available: u64::try_from(required(&entry, "available")?.try_clone()?)?,
+                        used_pct: f64::try_from(required(&entry, "used_pct")?.try_clone()?)? as f32,
+                    })
+                })
+                .collect()
+        })
+        .transpose()?;
+    let battery = dict
+        .get("battery")
+        .map(|value| -> anyhow::Result<BatterySample> {
+            let entry: HashMap<String, OwnedValue> = value.try_clone()?.try_into()?;
+            Ok(BatterySample {
+                percent: f64::try_from(required(&entry, "percent")?.try_clone()?)? as f32,
+                status: string(&entry, "status")?,
+            })
+        })
+        .transpose()?;
+    let uptime_s = dict
+        .get("uptime_s")
+        .map(|value| -> anyhow::Result<u64> { Ok(u64::try_from(value.try_clone()?)?) })
+        .transpose()?;
     let plugin = dict
         .get("plugin")
         .map(|value| -> anyhow::Result<BTreeMap<String, String>> {
@@ -470,6 +551,9 @@ pub fn snapshot_from_dbus(dict: &HashMap<String, OwnedValue>) -> anyhow::Result<
         disk,
         gpu,
         temps,
+        filesystems,
+        battery,
+        uptime_s,
         plugin,
     })
 }
@@ -491,4 +575,65 @@ fn nested(
 
 fn string(dict: &HashMap<String, OwnedValue>, key: &str) -> anyhow::Result<String> {
     Ok(String::try_from(required(dict, key)?.try_clone()?)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snapshot() -> Snapshot {
+        Snapshot::new(
+            1,
+            NetSample {
+                iface: "eth0".into(),
+                rx_bps: 1,
+                tx_bps: 2,
+                rx_total: 3,
+                tx_total: 4,
+            },
+            CpuSample {
+                total_pct: 5.0,
+                per_core: vec![5.0],
+                freq_mhz: None,
+                load: None,
+            },
+            MemSample {
+                used_pct: 6.0,
+                total: 7,
+                available: 8,
+                swap_pct: 9.0,
+            },
+        )
+    }
+
+    #[test]
+    fn optional_m4_keys_are_omitted_until_collected() {
+        let dict = snapshot_to_dbus(&snapshot());
+        for key in ["ts_ms", "net", "cpu", "mem", "temps", "plugin"] {
+            assert!(dict.contains_key(key), "{key}");
+        }
+        for key in ["filesystems", "battery", "uptime_s"] {
+            assert!(!dict.contains_key(key), "{key}");
+        }
+    }
+
+    #[test]
+    fn optional_m4_keys_are_added_without_changing_v1_keys() {
+        let mut snapshot = snapshot();
+        snapshot.filesystems = Some(vec![FilesystemSample {
+            mount: "/".into(),
+            total: 100,
+            available: 40,
+            used_pct: 60.0,
+        }]);
+        snapshot.battery = Some(BatterySample {
+            percent: 50.0,
+            status: "Charging".into(),
+        });
+        snapshot.uptime_s = Some(42);
+        let dict = snapshot_to_dbus(&snapshot);
+        for key in ["filesystems", "battery", "uptime_s"] {
+            assert!(dict.contains_key(key), "{key}");
+        }
+    }
 }

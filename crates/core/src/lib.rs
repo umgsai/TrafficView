@@ -103,6 +103,22 @@ pub struct TempSample {
     pub celsius: f32,
 }
 
+/// 一个挂载点的容量；采集失败时整个条目省略。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FilesystemSample {
+    pub mount: String,
+    pub total: u64,
+    pub available: u64,
+    pub used_pct: f32,
+}
+
+/// 多电池按满容量加权后的整体状态。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BatterySample {
+    pub percent: f32,
+    pub status: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub ts_ms: u64,
@@ -113,6 +129,10 @@ pub struct Snapshot {
     pub disk: Option<DiskSample>,
     pub gpu: Option<GpuSample>,
     pub temps: Vec<TempSample>,
+    /// 挂载点容量；未采集时为 `None`。
+    pub filesystems: Option<Vec<FilesystemSample>>,
+    pub battery: Option<BatterySample>,
+    pub uptime_s: Option<u64>,
     pub plugin: std::collections::BTreeMap<String, String>,
 }
 
@@ -127,6 +147,9 @@ impl Snapshot {
             disk: None,
             gpu: None,
             temps: Vec::new(),
+            filesystems: None,
+            battery: None,
+            uptime_s: None,
             plugin: std::collections::BTreeMap::new(),
         }
     }
@@ -163,6 +186,9 @@ mod tests {
         assert!(snapshot.disk.is_none());
         assert!(snapshot.gpu.is_none());
         assert!(snapshot.temps.is_empty());
+        assert!(snapshot.filesystems.is_none());
+        assert!(snapshot.battery.is_none());
+        assert!(snapshot.uptime_s.is_none());
         assert!(snapshot.plugin.is_empty());
     }
 }

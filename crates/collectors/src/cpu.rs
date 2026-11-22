@@ -50,6 +50,47 @@ pub fn cpu_usage(before: &[CpuTimes], after: &[CpuTimes]) -> Option<(f32, Vec<f3
     Some((usage[0], usage[1..].to_vec()))
 }
 
+/// 读取 `cpu*/cpufreq/scaling_cur_freq`（kHz）并返回可读核心的平均 MHz。
+pub fn read_freq_mhz(sys_cpu_root: &Path) -> Option<u32> {
+    let mut total = 0u64;
+    let mut count = 0u64;
+    for entry in fs::read_dir(sys_cpu_root).ok()?.flatten() {
+        if !entry.file_name().to_string_lossy().starts_with("cpu") {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(entry.path().join("cpufreq/scaling_cur_freq")) else {
+            continue;
+        };
+        let Ok(khz) = text.trim().parse::<u64>() else {
+            continue;
+        };
+        if khz == 0 {
+            continue;
+        }
+        total += khz;
+        count += 1;
+    }
+    (count > 0).then(|| (total / count / 1000) as u32)
+}
+
+/// 解析 `/proc/loadavg` 的前三个浮点数。
+pub fn parse_loadavg(input: &str) -> Option<[f32; 3]> {
+    let mut fields = input.split_whitespace();
+    let mut load = [0.0f32; 3];
+    for slot in &mut load {
+        let value: f32 = fields.next()?.parse().ok()?;
+        if !value.is_finite() || value < 0.0 {
+            return None;
+        }
+        *slot = value;
+    }
+    Some(load)
+}
+
+pub fn read_loadavg(proc_root: &Path) -> Option<[f32; 3]> {
+    parse_loadavg(&fs::read_to_string(proc_root.join("loadavg")).ok()?)
+}
+
 pub struct ProcCpu {
     root: PathBuf,
     previous: Option<Vec<CpuTimes>>,
@@ -124,6 +165,35 @@ mod tests {
         let (total, cores) = cpu.sample(Duration::from_secs(1)).unwrap().unwrap();
         assert_eq!(total, 50.0);
         assert_eq!(cores, vec![50.0]);
+    }
+
+    #[test]
+    fn cpufreq_averages_only_readable_cores() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for (cpu, freq) in [
+            ("cpu0", Some("2000000")),
+            ("cpu1", Some("1800000")),
+            ("cpu2", None),
+        ] {
+            let cpufreq = root.join(cpu).join("cpufreq");
+            if let Some(freq) = freq {
+                fs::create_dir_all(&cpufreq).unwrap();
+                fs::write(cpufreq.join("scaling_cur_freq"), format!("{freq}\n")).unwrap();
+            }
+        }
+        assert_eq!(read_freq_mhz(root), Some(1900));
+        assert_eq!(read_freq_mhz(&root.join("missing")), None);
+    }
+
+    #[test]
+    fn loadavg_reports_three_averages() {
+        assert_eq!(
+            parse_loadavg("0.52 0.58 0.59 1/1234 5678\n"),
+            Some([0.52, 0.58, 0.59])
+        );
+        assert_eq!(parse_loadavg("0.52 0.58\n"), None);
+        assert_eq!(parse_loadavg("nan 0.1 0.2\n"), None);
     }
 
     #[test]

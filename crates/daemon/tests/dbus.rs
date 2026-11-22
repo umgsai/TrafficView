@@ -156,8 +156,14 @@ async fn snapshot_properties_and_interval_validation_are_exposed() {
     for key in ["iface", "rx_bps", "tx_bps", "rx_total", "tx_total"] {
         assert!(net.contains_key(key), "missing net.{key}");
     }
-    assert!(!snapshot.contains_key("disk"), "disk must be omitted in M1");
-    assert!(!snapshot.contains_key("gpu"), "gpu must be omitted in M1");
+    // M4 起 disk 是可选键：存在时必须是 a{sv}，不再要求缺失。
+    if let Some(disk) = snapshot.get("disk") {
+        assert_eq!(disk.value_signature().to_string(), "a{sv}");
+    }
+    assert!(
+        !snapshot.contains_key("gpu"),
+        "gpu is not collected before the M4 GPU backend"
+    );
     assert_eq!(
         snapshot["temps"].value_signature().to_string(),
         "av",

@@ -50,24 +50,28 @@ daemon 注册失败时只会退化为“已有实例”，不会并行启动第�
 
 ## 快照字段
 
-顶层必需键：`ts_ms`、`net`、`cpu`、`mem`。`disk`、`gpu` 是可选键，M1 未采集时
-直接省略（D-Bus variant 没有 null 语义）；`temps` 为空 `av`，`plugin` 为空 `a{ss}`。
+顶层必需键：`ts_ms`、`net`、`cpu`、`mem`。`disk`、`gpu`、`filesystems`、
+`battery`、`uptime_s` 是可选键，未采集时直接省略（D-Bus variant 没有 null 语义）；
+`temps` 为空 `av`，`plugin` 为空 `a{ss}`。
 
 ```text
-ts_ms  t      CLOCK_MONOTONIC 毫秒；保持单调，不与墙上时钟耦合
-net    a{sv}  iface s, rx_bps t, tx_bps t, rx_total t, tx_total t
-cpu    a{sv}  total_pct d, per_core ad, [freq_mhz u], [load ad]
-mem    a{sv}  used_pct d, total t, available t, swap_pct d
-disk   a{sv}  [可选] read_bps t, write_bps t
-gpu    a{sv}  [可选] name s, util_pct d, mem_used t, mem_total t
-temps  av     [{label s, celsius d}]
-plugin a{ss}  插件指标（M1 为空）
+ts_ms       t      CLOCK_MONOTONIC 毫秒；保持单调，不与墙上时钟耦合
+net         a{sv}  iface s, rx_bps t, tx_bps t, rx_total t, tx_total t
+cpu         a{sv}  total_pct d, per_core ad, [freq_mhz u], [load ad]
+mem         a{sv}  used_pct d, total t, available t, swap_pct d
+disk        a{sv}  [可选] read_bps t, write_bps t
+gpu         a{sv}  [可选] name s, util_pct d, mem_used t, mem_total t
+temps       av     [{label s, celsius d}]
+filesystems av     [可选] [{mount s, total t, available t, used_pct d}]
+battery     a{sv}  [可选] percent d, status s
+uptime_s    t      [可选] `CLOCK_BOOTTIME` 秒
+plugin      a{ss}  插件指标（M1 为空）
 ```
 
 - 速率单位为字节/秒；`*_total` 为自网卡启动以来的累计字节数。
 - `cpu.total_pct`、`mem.used_pct`、`swap_pct`、`gpu.util_pct` 为 0–100 的百分比。
 - 未采集的可选结构必须省略，不能用 `0` 假装已采集。
-- CLI `--json` 还原快照时将省略的 `disk`/`gpu` 表示为 `null`。
+- CLI `--json` 还原快照时将省略的可选结构表示为 `null`。
 
 ## 错误与降级
 
@@ -148,4 +152,19 @@ rules = []                     # 默认不启用，避免升级后突然打扰
 
 每条告警规则：`enabled/metric/op/threshold/duration_s/cooldown_s/quiet_hours/level`；
 `metric` 取值 `cpu_pct|mem_pct|net_rx_bps|net_tx_bps|month_bytes`。
+
+## M4 增量（非破坏）
+
+M4 只新增可选快照键与一个只读属性，未修改任何既有字段/信号语义。
+
+### 新增快照键
+
+`filesystems`（`av`）、`battery`（`a{sv}`）、`uptime_s`（`t`），语义见上文；
+`cpu.freq_mhz`、`cpu.load`、`disk` 与 `temps` 在本阶段开始实际填充。
+
+### 新增 Properties
+
+| 名称 | 类型 | 语义 |
+|---|---|---|
+| `CollectorStatus` | `a{sv}` | 键为采集器名（`disk/temps/battery/filesystems/uptime/cpufreq/loadavg`），值为 `a{sv}`：`available b, reason s`；区分“零值”与“不可用” |
 

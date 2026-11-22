@@ -1,7 +1,7 @@
 //! daemon 调度：全接口采样、历史累计、自动选卡与 D-Bus 信号广播。
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs, io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -12,7 +12,14 @@ use chrono::Utc;
 use tokio::sync::{watch, RwLock};
 use tracing::{debug, info, warn};
 use trafficview_collectors::{
-    cpu::ProcCpu, mem::read_mem_with_mode, net::NetSampler, netlink::NetlinkWatcher,
+    cpu::{read_freq_mhz, read_loadavg, ProcCpu},
+    disk::{read_filesystems, DiskSampler},
+    hwmon::read_temps,
+    mem::read_mem_with_mode,
+    net::NetSampler,
+    netlink::NetlinkWatcher,
+    power::read_battery,
+    uptime::UptimeState,
 };
 use trafficview_core::{
     clock::monotonic_ms,
@@ -30,6 +37,26 @@ use crate::{
 };
 
 pub use crate::network::{default_route_interface, parse_default_route};
+
+/// 采集器可用性；供设置界面区分“零值”与“不可用”。
+#[derive(Debug, Clone, Default)]
+pub struct CollectorStatus {
+    pub available: bool,
+    pub reason: String,
+}
+
+impl CollectorStatus {
+    fn sampled<T>(value: &Option<T>, reason: &str) -> Self {
+        Self {
+            available: value.is_some(),
+            reason: if value.is_some() {
+                String::new()
+            } else {
+                reason.into()
+            },
+        }
+    }
+}
 
 /// daemon 的唯一可变状态；D-Bus 接口与调度器共享。
 pub struct SharedState {
@@ -49,6 +76,8 @@ pub struct SharedState {
     pub portal_scheme: Option<u32>,
     /// 供前端读取的最终配色。
     pub color_scheme: ColorScheme,
+    /// 最近一帧各采集器的可用性。
+    pub collector_status: BTreeMap<String, CollectorStatus>,
     pub shutdown: watch::Sender<bool>,
 }
 
@@ -93,6 +122,7 @@ pub async fn run_with_history(
         alerts,
         portal_scheme: None,
         color_scheme: ColorScheme::Dark,
+        collector_status: BTreeMap::new(),
         shutdown: shutdown_tx,
     }));
     let daemon = Daemon1::new(state.clone(), config_store);
@@ -157,6 +187,8 @@ fn open_history(explicit: Option<PathBuf>, config: &Config) -> Option<Arc<Mutex<
 struct RuntimeSampler {
     net: NetSampler,
     cpu: ProcCpu,
+    disk: DiskSampler,
+    uptime: UptimeState,
     last: Instant,
     smoothing: Smoother,
     smoothed_iface: Option<String>,
@@ -167,9 +199,11 @@ impl RuntimeSampler {
     fn new(proc_root: &Path, config: &Config) -> io::Result<Self> {
         let mut net = NetSampler::new(proc_root);
         let mut cpu = ProcCpu::new(proc_root);
+        let mut disk = DiskSampler::new(proc_root);
         // 建立首帧基线；速率在下一次采样才有效。
         let _ = net.sample_all(Duration::ZERO)?;
         let _ = cpu.sample(Duration::ZERO)?;
+        let _ = disk.sample(Duration::ZERO);
         let watcher = match NetlinkWatcher::spawn() {
             Ok(watcher) => Some(watcher),
             Err(error) => {
@@ -180,6 +214,8 @@ impl RuntimeSampler {
         Ok(Self {
             net,
             cpu,
+            disk,
+            uptime: UptimeState::default(),
             last: Instant::now(),
             smoothing: Smoother::new(config.network_smoothing),
             smoothed_iface: None,
@@ -285,6 +321,58 @@ async fn scheduler(
             }
         };
 
+        let sys_class = sys_root.parent().unwrap_or(Path::new("/sys/class"));
+        let disk = match active.disk.sample(elapsed) {
+            Ok(disk) => disk,
+            Err(error) => {
+                warn!(%error, "disk sampling failed; keeping other metrics");
+                None
+            }
+        };
+        let temps = read_temps(&sys_class.join("hwmon"));
+        let battery = read_battery(&sys_class.join("power_supply"));
+        let filesystems = read_filesystems(&["/".to_string()]);
+        let uptime_s = active.uptime.read(&proc_root);
+        let freq_mhz = read_freq_mhz(Path::new("/sys/devices/system/cpu"));
+        let load = read_loadavg(&proc_root);
+        let collector_status = BTreeMap::from([
+            (
+                "disk".to_string(),
+                CollectorStatus::sampled(&disk, "no whole-disk counters"),
+            ),
+            (
+                "temps".to_string(),
+                CollectorStatus {
+                    available: !temps.is_empty(),
+                    reason: if temps.is_empty() {
+                        "no hwmon sensors".into()
+                    } else {
+                        String::new()
+                    },
+                },
+            ),
+            (
+                "battery".to_string(),
+                CollectorStatus::sampled(&battery, "no battery"),
+            ),
+            (
+                "filesystems".to_string(),
+                CollectorStatus::sampled(&filesystems, "no readable mount point"),
+            ),
+            (
+                "uptime".to_string(),
+                CollectorStatus::sampled(&uptime_s, "uptime unreadable or went backwards"),
+            ),
+            (
+                "cpufreq".to_string(),
+                CollectorStatus::sampled(&freq_mhz, "cpufreq unavailable"),
+            ),
+            (
+                "loadavg".to_string(),
+                CollectorStatus::sampled(&load, "loadavg unavailable"),
+            ),
+        ]);
+
         let details = network::discover(&sys_root);
         refresh_interfaces(&state, &context, &details).await;
         record_history(&state, &details, &counters).await;
@@ -340,7 +428,7 @@ async fn scheduler(
             .find(|iface| iface.name == chosen)
             .map(|iface| iface.stable.clone())
             .unwrap_or_else(|| network::stable_key(&chosen, None));
-        let snapshot = Snapshot::new(
+        let mut snapshot = Snapshot::new(
             monotonic_ms(),
             NetSample {
                 iface: chosen.clone(),
@@ -352,17 +440,23 @@ async fn scheduler(
             CpuSample {
                 total_pct: cpu.0,
                 per_core: cpu.1,
-                freq_mhz: None,
-                load: None,
+                freq_mhz,
+                load,
             },
             mem,
         );
+        snapshot.disk = disk;
+        snapshot.temps = temps;
+        snapshot.filesystems = filesystems;
+        snapshot.battery = battery;
+        snapshot.uptime_s = uptime_s;
         let dict = snapshot_to_dbus(&snapshot);
         {
             let mut state = state.write().await;
             let changed = state.active_stable.as_deref() != Some(stable.as_str());
             state.snapshot = Some(snapshot);
             state.active_stable = Some(stable.clone());
+            state.collector_status = collector_status;
             drop(state);
             if changed {
                 info!(iface = %chosen, %stable, "active network interface changed");
