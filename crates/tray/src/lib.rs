@@ -28,6 +28,7 @@ const ITEM_OVERLAY: i32 = 2;
 const ITEM_QUIT: i32 = 3;
 const ITEM_INTERFACES: i32 = 10;
 const ITEM_CONFIG: i32 = 20;
+const ITEM_SETTINGS: i32 = 21;
 const ITEM_AUTO: i32 = 99;
 const ITEM_IFACE_BASE: i32 = 100;
 
@@ -251,6 +252,9 @@ impl DbusMenu {
                 map.insert("label".into(), Value::from("Network interface"));
                 map.insert("children-display".into(), Value::from("submenu"));
             }
+            ITEM_SETTINGS => {
+                map.insert("label".into(), Value::from("Settings…"));
+            }
             ITEM_CONFIG => {
                 map.insert("label".into(), Value::from("Open config"));
             }
@@ -309,6 +313,7 @@ impl DbusMenu {
             Self::item(ITEM_PAUSE, &model, Vec::new()),
             Self::item(ITEM_OVERLAY, &model, Vec::new()),
             Self::item(ITEM_INTERFACES, &model, interface_items),
+            Self::item(ITEM_SETTINGS, &model, Vec::new()),
             Self::item(ITEM_CONFIG, &model, Vec::new()),
             Self::item(ITEM_QUIT, &model, Vec::new()),
         ]
@@ -344,6 +349,7 @@ impl DbusMenu {
                 ITEM_PAUSE,
                 ITEM_OVERLAY,
                 ITEM_INTERFACES,
+                ITEM_SETTINGS,
                 ITEM_CONFIG,
                 ITEM_QUIT,
                 ITEM_AUTO,
@@ -448,6 +454,10 @@ impl DbusMenu {
                 };
                 name.map(|name| ("SetActiveInterface", name))
             }
+            ITEM_SETTINGS => {
+                self.open_settings();
+                None
+            }
             ITEM_CONFIG => {
                 self.open_config();
                 None
@@ -508,6 +518,19 @@ impl DbusMenu {
 }
 
 impl DbusMenu {
+    /// 拉起独立设置窗口：优先托盘同目录，其次 PATH；找不到时退回打开配置文件，
+    /// 避免出现“点了没反应”。
+    fn open_settings(&self) {
+        let path = settings_binary();
+        match std::process::Command::new(&path).spawn() {
+            Ok(_) => {}
+            Err(error) => {
+                eprintln!("tray: cannot launch {}: {error}", path.display());
+                self.open_config();
+            }
+        }
+    }
+
     fn open_config(&self) {
         let Some(path) = self
             .model
@@ -532,6 +555,18 @@ where
         .call_method(Some(BUS_NAME), OBJECT_PATH, Some(BUS_NAME), method, body)
         .await?;
     Ok(())
+}
+
+/// 设置窗口的位置：与托盘同目录（打包安装后的 `/usr/bin`），否则交给 PATH。
+fn settings_binary() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(candidate) = exe.parent().map(|dir| dir.join("trafficview-settings")) {
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+    PathBuf::from("trafficview-settings")
 }
 
 /// 启动托盘；阻塞直到 Quit、Ctrl-C 或 bus 断开。
@@ -773,5 +808,15 @@ mod tests {
         assert!(model.title().contains("paused"));
         model.paused = false;
         assert_eq!(model.title(), "TrafficView");
+    }
+
+    #[test]
+    fn settings_entry_has_a_label() {
+        let model = Model::default();
+        let settings = DbusMenu::item_properties(ITEM_SETTINGS, &model);
+        assert_eq!(
+            settings["label"].try_clone().unwrap(),
+            Value::from("Settings…")
+        );
     }
 }

@@ -83,6 +83,8 @@ enum Commands {
         #[arg(long)]
         autostart: bool,
     },
+    /// 启动独立 GTK4 设置窗口。
+    Settings,
     /// 管理 XDG autostart 条目。
     Autostart {
         #[command(subcommand)]
@@ -168,8 +170,30 @@ fn main() -> Result<()> {
             overlay(session, config)
         }
         Commands::Tray { autostart: _ } => trafficview_tray::run(),
+        Commands::Settings => launch_settings(),
         Commands::Autostart { command } => autostart(command),
     }
+}
+
+/// 拉起独立设置窗口：先找 `trafficview` 同目录，其次交给 PATH。
+fn launch_settings() -> Result<()> {
+    let mut candidates = Vec::new();
+    if let Ok(exe) = env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("trafficview-settings"));
+        }
+    }
+    candidates.push(std::path::PathBuf::from("trafficview-settings"));
+    for candidate in candidates {
+        match Command::new(&candidate).spawn() {
+            Ok(_) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).context(format!("无法启动 {}", candidate.display()));
+            }
+        }
+    }
+    bail!("找不到 trafficview-settings：请先构建 frontends/settings，或通过包管理器安装")
 }
 
 fn autostart_path() -> Result<std::path::PathBuf> {
