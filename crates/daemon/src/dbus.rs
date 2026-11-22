@@ -197,13 +197,19 @@ impl Daemon1 {
             )));
         }
         let rules = config.alerts.rules.clone();
-        {
+        let plugins_enabled = config.plugins.enabled;
+        let supervisor = {
             let mut state = self.state.write().await;
             state.config = config;
             state.color_scheme = crate::theme::decide(state.config.theme, state.portal_scheme);
             if let Ok(mut engine) = state.alerts.lock() {
                 engine.reload(&rules);
             };
+            state.plugin_supervisor.clone()
+        };
+        // ReloadConfig 是唯一允许被禁用插件重试的入口。
+        if let Some(supervisor) = supervisor {
+            supervisor.reload(plugins_enabled);
         }
         let _ = Daemon1::config_changed(&context).await;
         Ok(())

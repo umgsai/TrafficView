@@ -21,9 +21,12 @@ zbus = { version = "4", default-features = false, features = ["tokio"] }
 futures-util = "0.3"
 trafficview-core = { path = "../core" }
 trafficview-collectors = { path = "../collectors" }
+trafficview-plugin-proto = { path = "../plugin-proto" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 globset = "0.4"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 
 [dev-dependencies]
 futures-util = "0.3"

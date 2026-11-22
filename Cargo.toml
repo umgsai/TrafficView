@@ -1,6 +1,16 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/collectors", "crates/daemon", "crates/render", "crates/ui-x11", "crates/ui-wayland", "crates/tray", "crates/cli"]
+members = [
+    "crates/core",
+    "crates/collectors",
+    "crates/plugin-proto",
+    "crates/daemon",
+    "crates/render",
+    "crates/ui-x11",
+    "crates/ui-wayland",
+    "crates/tray",
+    "crates/cli",
+]
 
 [workspace.package]
 version = "0.1.0"

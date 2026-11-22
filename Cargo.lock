@@ -1856,13 +1856,24 @@ dependencies = [
  "futures-util",
  "globset",
  "rusqlite",
+ "serde",
  "tempfile",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "trafficview-collectors",
  "trafficview-core",
+ "trafficview-plugin-proto",
  "zbus",
+]
+
+[[package]]
+name = "trafficview-plugin-proto"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -174,3 +174,31 @@ GPU 后端优先 NVML，失败回退 `nvidia-smi`；AMD 用 `gpu_busy_percent`�
 |---|---|---|
 | `CollectorStatus` | `a{sv}` | 键为采集器名（`disk/temps/battery/filesystems/uptime/cpufreq/loadavg`），值为 `a{sv}`：`available b, reason s`；区分“零值”与“不可用” |
 
+### `plugin` 快照键与插件宿主（M4 Task 3）
+
+`plugin` 保持 `a{ss}`，键为 `<plugin-id>.<item-id>`，值为插件上报的原始字符串。
+插件缺失、崩溃或禁用时对应键省略，前端按既有规则显示 `--`，不伪造 0。
+
+插件清单位于 `$XDG_DATA_HOME/trafficview/plugins/<id>/plugin.toml`（未设置时
+`$HOME/.local/share/trafficview/plugins`）：
+
+```toml
+id = "example"
+command = "/absolute/path/to/plugin"
+args = []
+interval_ms = 1000
+capabilities = ["metrics"]
+```
+
+`command` 直接 exec（不经过 shell），必须是绝对路径；`id` 必须与目录名一致，
+仅允许 `[A-Za-z0-9_-]`；`interval_ms` 不得小于 500。协议为单行 JSON：
+request `{"t":<unix 秒浮点>,"interval_ms":<u32>}`，response
+`{"items":[{id,name,unit,format}],"values":{id:value}}`；单帧上限 1 MiB，
+非 UTF-8、未知字段、重复/非法 id 与值内换行均拒绝。
+
+单次等待 2 秒，超时 kill；失败按 1/2/4/8/16/32/60 秒退避，连续 3 次失败后禁用，
+只有 `ReloadConfig` 才重新启用。`CollectorStatus` 新增 `plugin.<id>` 键，
+值为 `available b, reason s`；插件失败不影响其他键与基础指标。配置新增
+`[plugins] enabled = true`，只控制是否运行插件，不清空已发布的 `plugin` 键语义。
+
+

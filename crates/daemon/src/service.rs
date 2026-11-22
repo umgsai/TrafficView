@@ -35,6 +35,7 @@ use crate::{
     dbus::{snapshot_to_dbus, Daemon1, BUS_NAME, PATH},
     history::HistoryStore,
     network::{self, NetSelector},
+    plugins::{self, PluginSupervisor},
 };
 
 pub use crate::network::{default_route_interface, parse_default_route};
@@ -79,6 +80,8 @@ pub struct SharedState {
     pub color_scheme: ColorScheme,
     /// 最近一帧各采集器的可用性。
     pub collector_status: BTreeMap<String, CollectorStatus>,
+    /// 子进程插件监督器；`None` 表示该入口不加载插件。
+    pub plugin_supervisor: Option<Arc<PluginSupervisor>>,
     pub shutdown: watch::Sender<bool>,
 }
 
@@ -98,7 +101,7 @@ pub fn list_interfaces(net_root: &Path) -> Vec<String> {
 
 /// 启动 daemon：注册名称、启动调度、等待 SIGINT 或 Quit。
 pub async fn run(config_store: ConfigStore) -> anyhow::Result<()> {
-    run_with_history(config_store, None).await
+    run_with_options(config_store, None, plugins::default_root()).await
 }
 
 /// 可注入历史库路径（测试使用临时目录，避免污染真实 XDG data）。
@@ -106,11 +109,27 @@ pub async fn run_with_history(
     config_store: ConfigStore,
     history_path: Option<PathBuf>,
 ) -> anyhow::Result<()> {
+    run_with_options(config_store, history_path, None).await
+}
+
+/// 可注入历史库与插件目录；`plugin_root=None` 时不加载任何插件。
+pub async fn run_with_options(
+    config_store: ConfigStore,
+    history_path: Option<PathBuf>,
+    plugin_root: Option<PathBuf>,
+) -> anyhow::Result<()> {
     let config = config_store
         .load_or_create()
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let history = open_history(history_path, &config);
     let alerts = Mutex::new(AlertEngine::new(config.alerts.rules.clone()));
+    let plugin_supervisor = plugin_root.map(|root| {
+        Arc::new(PluginSupervisor::start(
+            root,
+            plugins::RuntimeConfig::default(),
+            config.plugins.enabled,
+        ))
+    });
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let state = Arc::new(RwLock::new(SharedState {
         config,
@@ -124,6 +143,7 @@ pub async fn run_with_history(
         portal_scheme: None,
         color_scheme: ColorScheme::Dark,
         collector_status: BTreeMap::new(),
+        plugin_supervisor: plugin_supervisor.clone(),
         shutdown: shutdown_tx,
     }));
     let daemon = Daemon1::new(state.clone(), config_store);
@@ -164,6 +184,9 @@ pub async fn run_with_history(
     }
     let _ = state.read().await.shutdown.send(true);
     let _ = task.await;
+    if let Some(supervisor) = plugin_supervisor {
+        supervisor.stop();
+    }
     Ok(())
 }
 
@@ -234,6 +257,7 @@ async fn scheduler(
     sys_root: PathBuf,
 ) {
     let mut shutdown = state.read().await.shutdown.subscribe();
+    let supervisor = state.read().await.plugin_supervisor.clone();
     let mut sampler: Option<RuntimeSampler> = None;
     loop {
         let (interval_ms, paused, configured_iface, include_cache, whitelist, blacklist, smoothing) = {
@@ -340,7 +364,7 @@ async fn scheduler(
         let load = read_loadavg(&proc_root);
         let (gpus, gpu_reason) = active.gpu.sample(Instant::now(), monotonic_ms());
         let gpu = gpus.first().cloned();
-        let collector_status = BTreeMap::from([
+        let mut collector_status = BTreeMap::from([
             (
                 "gpu".to_string(),
                 CollectorStatus {
@@ -384,6 +408,17 @@ async fn scheduler(
                 CollectorStatus::sampled(&load, "loadavg unavailable"),
             ),
         ]);
+        if let Some(supervisor) = &supervisor {
+            for (id, status) in supervisor.statuses() {
+                collector_status.insert(
+                    format!("plugin.{id}"),
+                    CollectorStatus {
+                        available: status.available,
+                        reason: status.reason,
+                    },
+                );
+            }
+        }
 
         let details = network::discover(&sys_root);
         refresh_interfaces(&state, &context, &details).await;
@@ -464,6 +499,9 @@ async fn scheduler(
         snapshot.uptime_s = uptime_s;
         snapshot.gpu = gpu;
         snapshot.gpus = gpus;
+        if let Some(supervisor) = &supervisor {
+            snapshot.plugin = supervisor.published_values();
+        }
         let dict = snapshot_to_dbus(&snapshot);
         {
             let mut state = state.write().await;

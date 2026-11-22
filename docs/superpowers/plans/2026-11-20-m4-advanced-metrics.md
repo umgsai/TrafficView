@@ -150,7 +150,7 @@ git commit -m "feat: support AMD NVIDIA and Intel GPU metrics"
 - Modify: `crates/core/src/config.rs`
 - Modify: `Cargo.toml`
 
-- [ ] **Step 1: 写协议帧与宿主生命周期失败测试**
+- [x] **Step 1: 写协议帧与宿主生命周期失败测试**
 
 协议测试覆盖空 items、重复 id、非法 id、未知消息字段、超长行、非 UTF-8、插件值中换行。宿主测试用 Linux fixture 命令模拟：正常响应、2 秒超时、立即崩溃、写 stderr、连续三次失败后禁用、reload 后允许重试。
 
@@ -171,13 +171,13 @@ fn response_over_one_mebibyte_is_rejected_before_json_parsing() {
 }
 ```
 
-- [ ] **Step 2: 确认失败**
+- [x] **Step 2: 确认失败**
 
 Run: `cargo test -p trafficview-plugin-proto && cargo test -p trafficview-daemon --test plugins`
 
 Expected: FAIL，协议 crate 与宿主未实现。
 
-- [ ] **Step 3: 实现协议、发现和监督**
+- [x] **Step 3: 实现协议、发现和监督**
 
 协议使用单行 JSON，daemon request 固定包含 `t`（Unix 秒浮点）和 `interval_ms`；response 使用调研中的 `items/values`。每个插件 frame 上限 1MiB，stdout 一行一帧，stderr 由独立任务读取并写 tracing，防止管道填满。
 
@@ -193,13 +193,13 @@ capabilities = ["metrics"]
 
 command 直接 exec，不经过 shell；拒绝相对 command、id 与目录不一致、interval 小于 500ms。宿主按各自 interval 发请求，超过 2 秒 kill 并指数退避 1/2/4/8/16/32/60 秒；连续三次失败禁用，显式 `ReloadConfig` 才重试。慢插件不阻塞内置采集。Snapshot `plugin` key 使用 `<plugin-id>.<item-id>`，display registry 同步生成 `plugin.<plugin-id>.<item-id>` 项，插件消失时保留皮肤布局但显示 `--`。
 
-- [ ] **Step 4: 验证隔离与显示**
+- [x] **Step 4: 验证隔离与显示**
 
 Run: `cargo test -p trafficview-plugin-proto && cargo test -p trafficview-daemon --test plugins && cargo test --workspace`
 
 Expected: 全部 PASS；fixture 插件崩溃、超时或写垃圾 stdout 时，网络/CPU/内存仍按 1 秒周期更新，D-Bus 不被锁死。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add Cargo.toml Cargo.lock crates/plugin-proto crates/daemon/src/plugins.rs crates/daemon/tests/plugins.rs crates/daemon/src/service.rs crates/core/src/config.rs
@@ -368,3 +368,30 @@ Task 2 已完成并以真实输出验证：
   `radeontop`/`nvidia-smi`/`intel_gpu_top`；三类后端实机读数标记为未实测。
 - Ruling：主 GPU 暂取第一块，按配置 stable PCI id 的选择留到 Task 5 配置 API；
   NVML 通过 libc `dlopen` 调用，失败回退 `nvidia-smi`（2 秒超时）。
+
+Task 3 已完成并以真实输出验证：
+
+- 新建 `trafficview-plugin-proto`：10 项协议测试覆盖空 items、重复/非法 id、
+  未知字段、超长帧在 JSON 解析前拒绝、非 UTF-8、值内换行、未声明 value、
+  request 往返与快照键前缀；宿主 9 项测试先全部失败（`not implemented`），
+  实现后通过：正常响应、2 秒超时、崩溃退出码、stderr 大量输出不死锁、
+  三次失败禁用、退避饱和、清单发现校验、reload 重试、查询不阻塞调用方。
+- 协议为单行 JSON，request 固定 `t/interval_ms`，response 为 `items/values`；
+  单帧 1 MiB，超长在 UTF-8/JSON 解析前拒绝。清单位于
+  `$XDG_DATA_HOME/trafficview/plugins/<id>/plugin.toml`，command 必须绝对路径，
+  id 与目录一致，interval 下限 500ms。
+- 每个插件使用独立 OS 线程；stdout 单帧读取与 stderr 排空各用独立线程，
+  超时 kill，失败退避 1/2/4/8/16/32/60 秒，连续 3 次失败禁用，
+  `ReloadConfig` 重新发现并清零失败计数。
+- 调度器把成功值写入 `Snapshot.plugin`（键 `<plugin-id>.<item-id>`），并在
+  `CollectorStatus` 增加 `plugin.<id>`；失败只移除该插件值，不影响内置指标。
+- `dbus-run-session -- cargo test --workspace` 全部通过（158 项）；
+  `cargo fmt --all`、`cargo clippy --workspace --all-targets -- -D warnings`、
+  `cargo build --release -p trafficview-daemon` 通过。
+- 独立 session bus 实测：fixture 插件返回 `{'demo.fan_rpm': '1420'}`；
+  `CollectorStatus` 中 `plugin.demo.available=true`，崩溃插件
+  `plugin.bad.available=false, reason="plugin exited with status 7"`，
+  日志显示 1s/2s 两次退避后第三次失败 `disabled=true`；同帧
+  `net/cpu/mem/disk/filesystems` 仍正常输出，D-Bus 未被阻塞。
+- 未实测边界：没有真实第三方插件二进制，全部用 `/bin/sh` fixture；插件宿主
+  仅面向 Linux。P95 插件长尾延迟与真实插件生态兼容性待后续版本验证。

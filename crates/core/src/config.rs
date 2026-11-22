@@ -36,6 +36,7 @@ pub struct Config {
     pub history: HistoryConfig,
     pub alerts: AlertsConfig,
     pub overlay: OverlayConfig,
+    pub plugins: PluginsConfig,
 }
 
 /// 展示速率平滑算法；默认不改变原始速率。
@@ -81,6 +82,19 @@ impl Default for HistoryConfig {
 pub struct AlertsConfig {
     /// 默认不启用任何规则，避免升级后突然打扰用户。
     pub rules: Vec<AlertRule>,
+}
+
+/// 子进程插件开关；插件清单位于 XDG data 目录，不在 config.toml 中声明。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PluginsConfig {
+    pub enabled: bool,
+}
+
+impl Default for PluginsConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -172,6 +186,7 @@ impl Default for Config {
             history: HistoryConfig::default(),
             alerts: AlertsConfig::default(),
             overlay: OverlayConfig::default(),
+            plugins: PluginsConfig::default(),
         }
     }
 }
