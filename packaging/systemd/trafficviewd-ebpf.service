@@ -1,0 +1,21 @@
+[Unit]
+Description=TrafficView eBPF process traffic helper
+Documentation=file:///usr/share/doc/trafficview/dbus-v1.md
+After=network.target
+Conflicts=trafficviewd-afpacket.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/trafficviewd-ebpf --backend ebpf
+Restart=on-failure
+RestartSec=3
+# 加载网络 eBPF 程序需要 CAP_BPF、CAP_PERFMON 与 CAP_NET_ADMIN。
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_NET_ADMIN
+AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_NET_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

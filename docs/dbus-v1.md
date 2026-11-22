@@ -192,6 +192,16 @@ helper 按调用者 UID 过滤，user daemon 只保留 Top 10。helper 缺失时
 `UpdateConfig` 修改 `backend` 或 `sample_interval_ms` 后 daemon 立即重启消费者，
 无需重启进程；查询周期取 `sample_interval_ms`，下限 1 秒。
 
+本版本提供 `/usr/bin/trafficviewd-ebpf --backend af-packet`：它扫描
+`/proc/net/{tcp,udp,tcp6,udp6}` 与 `/proc/<pid>/fd` 建立端口→inode→PID 映射，
+按 2 秒周期刷新并只把能归属的帧计入对应 PID；无法归属的字节不分配给任何进程。
+`GetProcesses` 每次调用都会刷新聚合，并通过 `GetConnectionUnixUser` 获取调用者 UID：
+普通用户只能看到自己的进程，root 可取全部；身份无法确认时返回空数组。
+helper 需要 `CAP_NET_RAW`，对应单元为 `trafficviewd-afpacket.service`，
+system bus 策略为 `packaging/dbus/com.trafficview.Ebpf1.conf`。
+`--backend ebpf` 在当前构建中固定返回 `available=false`；eBPF 内核程序、
+`trafficviewd-ebpf.service` 的实机加载与真实抓包尚未验收。
+
 ```toml
 [process_traffic]
 backend = "off"   # off | ebpf | af_packet | auto

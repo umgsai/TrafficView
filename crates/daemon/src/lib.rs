@@ -1,6 +1,7 @@
 pub mod alerts;
 pub mod dbus;
 pub mod history;
+pub mod netprobe;
 pub mod network;
 pub mod plugins;
 pub mod process_traffic;

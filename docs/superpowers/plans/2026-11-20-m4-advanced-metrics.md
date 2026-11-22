@@ -280,7 +280,7 @@ systemd-analyze verify packaging/systemd/trafficviewd-afpacket.service
 
 Expected: 默认构建无 aya 依赖；eBPF 测试机产生已知 TCP/UDP 流量时 PID 排行与对照工具同窗口误差可解释；无 capabilities 时基础 Snapshot 持续更新且 `processes=null`。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/daemon/src/process_traffic.rs crates/daemon/src/bin crates/daemon/Cargo.toml crates/netprobe-ebpf crates/core/src/config.rs crates/core/src/lib.rs packaging/systemd packaging/dbus Cargo.lock
@@ -425,6 +425,24 @@ Task 4 部分完成（daemon 消费者与降级契约；特权 helper 未实现�
 - 质量门通过：`cargo clippy --workspace --all-targets -- -D warnings`、
   `cargo check -p trafficview-daemon --no-default-features`、
   `dbus-run-session -- cargo test --workspace`。
-- 未完成：`trafficviewd-ebpf` helper、eBPF/AF_PACKET 内核侧实现、两个 systemd
-  unit 与 system bus policy。本机无 `CAP_BPF/CAP_NET_RAW` 且 sudo 需密码，
-  helper 实测、UID 隔离、PID 重用与 map reset 均标记未实测。
+- 后续已补齐 AF_PACKET helper（见下），eBPF 内核侧实现仍未构建。
+
+AF_PACKET helper 已完成（2026-11-22，fixture 验证）：
+
+- 新建 `crates/daemon/src/netprobe.rs` 与 `src/bin/trafficviewd-ebpf.rs`：解析
+  `/proc/net/{tcp,udp,tcp6,udp6}`、`/proc/<pid>/fd`、`status`、`stat`，按端口
+  方向归属收发字节；无法匹配的帧只累计为 unattributed，不分配给随机 PID。
+- 8 项单元测试通过：proc net/inode 解析、VLAN/IPv4/IPv6 包解析、Rx/Tx 方向、
+  UID/comm/starttime、bps 与退出清理、PID 重用清零、计数器 reset、UID 过滤、
+  以及 fixture 端到端归属（2 秒窗口 bps 与总量）。
+- system D-Bus 接口按契约实现 `GetProcesses`/`GetBackendStatus`；调用者 UID
+  通过 `GetConnectionUnixUser` 获取，普通用户只见自己的进程，root 可见全部。
+- 新增 `packaging/systemd/trafficviewd-afpacket.service`、
+  `trafficviewd-ebpf.service` 与 `packaging/dbus/com.trafficview.Ebpf1.conf`。
+  单元使用 `Type=simple` + `Conflicts=`，避免同一 `BusName` 在 systemd 中冲突。
+- `dbus-run-session -- cargo test --workspace`：182 项通过；`fmt`、
+  `clippy -D warnings` 与 release 构建通过；`systemd-analyze verify` 仅报告
+  `/usr/bin/trafficviewd-ebpf` 未安装（本机无 sudo）。
+- 未实测边界：无 `CAP_NET_RAW`/root，AF_PACKET 真实抓包与 UID 隔离未运行；
+  `--backend ebpf` 当前固定 `available=false`，eBPF 程序与 `aya` 未构建。
+

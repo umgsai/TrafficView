@@ -1855,6 +1855,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "globset",
+ "libc",
  "rusqlite",
  "serde",
  "tempfile",

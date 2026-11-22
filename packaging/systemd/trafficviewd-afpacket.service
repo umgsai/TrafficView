@@ -1,0 +1,22 @@
+[Unit]
+Description=TrafficView AF_PACKET process traffic helper
+Documentation=file:///usr/share/doc/trafficview/dbus-v1.md
+After=network.target
+Conflicts=trafficviewd-ebpf.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/trafficviewd-ebpf --backend af-packet
+Restart=on-failure
+RestartSec=3
+# AF_PACKET 需要 CAP_NET_RAW；读取 /proc/<pid>/fd 归属进程仍以 root 运行。
+CapabilityBoundingSet=CAP_NET_RAW
+AmbientCapabilities=CAP_NET_RAW
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=no
+
+[Install]
+WantedBy=multi-user.target
