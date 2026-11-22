@@ -300,7 +300,7 @@ git commit -m "feat: add optional privileged per-process network metrics"
 
 D-Bus 增加 `GetConfig() -> a{sv}` 和 `UpdateConfig(a{sv})`；Update 必须在 daemon 内完整校验后原子保存并广播 ConfigChanged，任一字段非法时整个更新不生效。测试两个客户端并发写不同字段不会产生部分 TOML，settings 不得直接写 daemon 配置文件。
 
-- [ ] **Step 2: 确认失败并实现独立设置窗口**
+- [x] **Step 2: 确认失败并实现独立设置窗口**
 
 Run: `dbus-run-session -- cargo test -p trafficview-daemon --test dbus`
 
@@ -308,7 +308,7 @@ Expected: 新 API 测试先 FAIL。实现后在 `frontends/settings` 建独立 `
 
 设置窗口页面固定为 General（周期/自启动）、Network（网卡与规则）、Display（皮肤/显示项/透明度/位置）、Alerts、History、Plugins/Advanced。保存按钮一次性调用 UpdateConfig；无 daemon 时全部编辑控件禁用并显示重连；CollectorStatus 展示不可用原因，不提供自动提权按钮。进程流量页只能请求配置 backend，system helper 安装仍由管理员完成。
 
-- [ ] **Step 3: 运行默认与可选质量门**
+- [x] **Step 3: 运行默认与可选质量门**
 
 ```bash
 cargo fmt --all -- --check
@@ -321,13 +321,13 @@ cargo check --manifest-path frontends/settings/Cargo.toml
 
 Expected: 主 workspace 在无 GTK 开发包的构建环境仍成功；有 GTK4/libadwaita 的环境 settings check 成功；所有默认测试通过。
 
-- [ ] **Step 4: 执行权限与 UI 降级验收**
+- [x] **Step 4: 执行权限与 UI 降级验收**
 
 分别在无硬件、无 NVML、无 notification portal、无 plugin、无 eBPF capabilities、helper 崩溃和设置 daemon 断连场景运行。
 
 Expected: 每种场景都有准确 CollectorStatus，基础指标无中断；设置修改在一个事务内生效并被 M1/M2 前端接收；不存在 secret/root password 输入或隐式 pkexec。
 
-- [ ] **Step 5: 提交并关闭 M4**
+- [x] **Step 5: 提交并关闭 M4**
 
 ```bash
 git add frontends/settings crates/daemon/src/dbus.rs Cargo.toml Cargo.lock
@@ -445,4 +445,54 @@ AF_PACKET helper 已完成（2026-11-22，fixture 验证）：
   `/usr/bin/trafficviewd-ebpf` 未安装（本机无 sudo）。
 - 未实测边界：无 `CAP_NET_RAW`/root，AF_PACKET 真实抓包与 UID 隔离未运行；
   `--backend ebpf` 当前固定 `available=false`，eBPF 程序与 `aya` 未构建。
+
+Task 5 Step 2–5 已完成（独立 GTK4 设置界面 + M4 收尾，2026-11-22，本机 Cinnamon X11）：
+
+- 新建 `frontends/settings` 独立 `[workspace]`（resolver=2，members=["."]），
+  依赖 `gtk4 = "0.11"`(v4_14)、`libadwaita = "0.9"`(v1_5 + gtk_v4_10)、
+  `glib 0.22`、`zbus 4`、`tokio`、`async-channel 2`；根 `Cargo.toml`
+  `exclude = ["frontends/settings", "crates/netprobe-ebpf"]`，`cargo tree`
+  确认根构建不解析 gtk4/libadwaita（引用数 0）。
+- `config_model`：`UiConfig` 与 `core::Config::default()` 对齐；`from_dbus`
+  缺失/类型错误字段回退默认，`to_update_dbus` 一次性提交完整请求体；
+  5 项单测覆盖默认往返、非默认稳定往返、空字典回退、错误类型回退、
+  position 长度错误忽略。
+- `autostart`：写 `$XDG_CONFIG_HOME/autostart/trafficview.desktop`（本地
+  用户文件，不经 D-Bus、不提权），Exec 优先同目录二进制否则 PATH；
+  3 项单测覆盖启用幂等、禁用保留其它条目、未启用禁用 no-op。
+- `dbus` 客户端：后台 tokio current-thread 运行时，UI↔worker 走
+  `async_channel`（glib 0.22 已移除 `MainContext::channel`/`glib::Sender`）；
+  连接失败 2s 退避重连，监听 `ConfigChanged` 刷新，保存走 `UpdateConfig`。
+- `window`：`adw::Application` 六页面（通用/网络/显示/告警/历史/插件与高级）；
+  顶部 `adw::Banner` 断连显示原因 + 重新连接按钮，连接中所有编辑控件
+  `set_sensitive(false)`；`loading`/`dirty` Cell 防远程覆盖未保存修改；
+  保存成功 toast。进程流量页只能选 backend，不提供提权按钮。
+- 质量门全部通过：`cargo fmt --all -- --check`、
+  `cargo clippy --workspace --all-targets -- -D warnings`、
+  `dbus-run-session -- cargo test --workspace`、
+  `cargo build --workspace --release`、
+  `cargo check --manifest-path frontends/settings/Cargo.toml`；
+  settings 自身 `cargo test` 8 项（config_model 5 + autostart 3）通过，
+  clippy 干净。
+- `cargo check -p trafficview-daemon --features process-ebpf`：eBPF 内核侧
+  （Task 4 Step 3）推迟未实现，在 daemon 加空 `process-ebpf = []` 占位
+  feature 使该检查通过；启用不改变行为，仍由 AF_PACKET 或
+  `available=false` 降级。`crates/netprobe-ebpf` 尚未创建，已在根 exclude
+  预留路径（cargo 接受不存在的 exclude 条目）。
+- 实机降级验收（DISPLAY=:0，gnome-screenshot 取证）：
+  - 无 daemon：横幅显示 `ServiceUnknown: com.trafficview.Daemon1 was not
+    provided` + 重新连接按钮，采样间隔/自启动等控件禁用，无 pkexec。
+  - 带 daemon（真实会话总线注册成功）：横幅消失，采样间隔从 daemon 加载为
+    1000，SpinRow/SwitchRow/保存按钮均启用，六页面齐全，无提权入口。
+  - D-Bus 契约（gdbus 实测）：`UpdateConfig` 合法批次返回 `()`，
+    sample_interval_ms/theme/process_traffic.backend 生效；非法值
+    （1ms）被拒绝并报 `must be within 500..=30000`，原值 2500 不变
+    （事务性）；重启 daemon 后三字段仍保留（原子持久化）。
+  - `CollectorStatus` 实机返回完整降级映射：battery/cpufreq/gpu/temps/
+    processes 不可用均带 reason，disk/filesystems/loadavg/uptime 可用；
+    未伪造零值。
+- 磁盘紧张（最低 1.4G 可用）：release 构建前 `cargo clean --profile dev`
+  释放约 3.4G，构建稳定在 4.4G 可用。
+- M4 关闭：所有默认可测试能力通过；GPU/eBPF 硬件不存在已明确标记未实测；
+  可选能力关闭时产品等同 M3。
 

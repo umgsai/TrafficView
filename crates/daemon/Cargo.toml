@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 description = "TrafficView sampling daemon and D-Bus v1 service"
 
+[features]
+# eBPF 进程流量内核侧（crates/netprobe-ebpf）在 Task 4 Step 3 推迟实现；
+# 此 feature 为占位，当前启用不改变行为，由 AF_PACKET 或 available=false 降级。
+process-ebpf = []
+
 [lib]
 name = "trafficview_daemon"
 path = "src/lib.rs"

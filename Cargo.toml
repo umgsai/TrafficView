@@ -1,5 +1,8 @@
 [workspace]
 resolver = "2"
+# frontends/settings 是独立 workspace（依赖 GTK4/libadwaita），根构建不得解析它；
+# crates/netprobe-ebpf 的 eBPF 内核侧推迟实现，创建后同样作为独立 workspace 排除。
+exclude = ["frontends/settings", "crates/netprobe-ebpf"]
 members = [
     "crates/core",
     "crates/collectors",
