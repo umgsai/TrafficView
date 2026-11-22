@@ -407,3 +407,21 @@ Task 5 Step 1 已完成（仅配置 API；GTK 窗口未开始）：
 - `dbus-run-session -- cargo test -p trafficview-daemon` 通过；
   `cargo clippy -p trafficview-daemon --all-targets -- -D warnings` 通过。
 - 只修改配置 API 与文档；`frontends/settings` 尚未创建，GTK 依赖未引入。
+
+Task 4 部分完成（daemon 消费者与降级契约；特权 helper 未实现）：
+
+- 配置新增 `[process_traffic] backend = "off"`（`off|ebpf|af_packet|auto`），
+  默认 off；`GetConfig`/`UpdateConfig` 同步暴露该小节。
+- `Snapshot` 新增可选 `processes` 键（`av`，每项
+  `pid/name/rx_bps/tx_bps/rx_total/tx_total`）；默认 off 时省略，CLI JSON 为 null。
+- daemon 侧异步消费者：system bus `NameHasOwner` 检查、`GetBackendStatus`
+  能力协商、`GetProcesses` 解析、Top 10 排序、1 秒查询超时与失败清空；
+  `auto` 优先 eBPF，能力不足再 AF_PACKET，缺失时给出 systemd 安装提示。
+- 新增 9 项 `process_traffic` 单元测试，以及 D-Bus 集成断言（默认省略、
+  `CollectorStatus.processes` 关闭原因、配置往返与非法 backend）。
+- 质量门通过：`cargo clippy --workspace --all-targets -- -D warnings`、
+  `cargo check -p trafficview-daemon --no-default-features`、
+  `dbus-run-session -- cargo test --workspace`。
+- 未完成：`trafficviewd-ebpf` helper、eBPF/AF_PACKET 内核侧实现、两个 systemd
+  unit 与 system bus policy。本机无 `CAP_BPF/CAP_NET_RAW` 且 sudo 需密码，
+  helper 实测、UID 隔离、PID 重用与 map reset 均标记未实测。

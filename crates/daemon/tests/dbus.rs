@@ -38,6 +38,8 @@ trait Daemon1 {
     fn interfaces(&self) -> zbus::Result<Vec<String>>;
     #[zbus(property)]
     fn active_interface(&self) -> zbus::Result<String>;
+    #[zbus(property)]
+    fn collector_status(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
 
     #[zbus(signal)]
     fn sample(&self, snapshot: HashMap<String, OwnedValue>) -> zbus::Result<()>;
@@ -178,6 +180,7 @@ async fn config_api_round_trips_and_rejects_invalid_updates_atomically() {
     assert!(config.contains_key("overlay"));
     assert!(config.contains_key("alerts"));
     assert!(config.contains_key("history"));
+    assert!(config.contains_key("process_traffic"));
 
     proxy
         .update_config(HashMap::from([
@@ -299,6 +302,23 @@ async fn snapshot_properties_and_interval_validation_are_exposed() {
         "a{ss}",
         "plugin must be an empty string map"
     );
+    assert!(
+        !snapshot.contains_key("processes"),
+        "processes must be omitted while the backend is off"
+    );
+
+    let status = harness
+        .proxy()
+        .await
+        .unwrap()
+        .collector_status()
+        .await
+        .unwrap();
+    let process_status: HashMap<String, OwnedValue> =
+        status["processes"].try_clone().unwrap().try_into().unwrap();
+    assert!(!bool::try_from(&process_status["available"]).unwrap());
+    let reason = String::try_from(process_status["reason"].try_clone().unwrap()).unwrap();
+    assert!(reason.contains("off"), "unexpected reason: {reason}");
 
     assert_eq!(proxy.sample_interval().await.unwrap(), 1000);
     assert!(

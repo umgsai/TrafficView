@@ -37,6 +37,7 @@ pub struct Config {
     pub alerts: AlertsConfig,
     pub overlay: OverlayConfig,
     pub plugins: PluginsConfig,
+    pub process_traffic: ProcessTrafficConfig,
 }
 
 /// 展示速率平滑算法；默认不改变原始速率。
@@ -95,6 +96,23 @@ impl Default for PluginsConfig {
     fn default() -> Self {
         Self { enabled: true }
     }
+}
+
+/// 进程级流量后端；默认 off，不连接 system bus、不申请任何权限。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessTrafficBackend {
+    #[default]
+    Off,
+    Ebpf,
+    AfPacket,
+    Auto,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProcessTrafficConfig {
+    pub backend: ProcessTrafficBackend,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -187,6 +205,7 @@ impl Default for Config {
             alerts: AlertsConfig::default(),
             overlay: OverlayConfig::default(),
             plugins: PluginsConfig::default(),
+            process_traffic: ProcessTrafficConfig::default(),
         }
     }
 }
@@ -527,6 +546,11 @@ mod tests {
         assert_eq!(cfg.overlay.opacity, 0.9);
         assert_eq!(cfg.overlay.units, RateUnit::Bytes);
         assert!(cfg.overlay.skin.is_empty());
+        assert_eq!(
+            cfg.process_traffic.backend,
+            ProcessTrafficBackend::Off,
+            "process traffic must stay off by default"
+        );
     }
 
     #[test]

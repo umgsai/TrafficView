@@ -13,11 +13,11 @@ use tracing::warn;
 use trafficview_core::{
     config::{
         AlertRule, AlertsConfig, Config, ConfigStore, DisplayItem, HistoryConfig, NetworkSmoothing,
-        OverlayConfig, PluginsConfig, RateUnit, ThemeMode, SAMPLE_INTERVAL_MAX_MS,
-        SAMPLE_INTERVAL_MIN_MS,
+        OverlayConfig, PluginsConfig, ProcessTrafficBackend, ProcessTrafficConfig, RateUnit,
+        ThemeMode, SAMPLE_INTERVAL_MAX_MS, SAMPLE_INTERVAL_MIN_MS,
     },
     BatterySample, CpuSample, DiskSample, FilesystemSample, GpuSample, InterfaceInfo, MemSample,
-    NetSample, Snapshot, TempSample, TrafficSummary,
+    NetSample, ProcessTrafficSample, Snapshot, TempSample, TrafficSummary,
 };
 use zbus::{
     object_server::SignalContext,
@@ -393,8 +393,30 @@ pub fn snapshot_to_dbus(snapshot: &Snapshot) -> HashMap<String, OwnedValue> {
     if let Some(uptime_s) = snapshot.uptime_s {
         top.insert("uptime_s".into(), owned(Value::from(uptime_s)));
     }
+    if let Some(processes) = &snapshot.processes {
+        top.insert(
+            "processes".into(),
+            owned(Value::from(
+                processes
+                    .iter()
+                    .map(process_value)
+                    .collect::<Vec<Value<'static>>>(),
+            )),
+        );
+    }
     top.insert("plugin".into(), owned(plugin_value(&snapshot.plugin)));
     top
+}
+
+fn process_value(sample: &ProcessTrafficSample) -> Value<'static> {
+    let mut map: HashMap<String, Value<'static>> = HashMap::new();
+    map.insert("pid".into(), Value::from(sample.pid));
+    map.insert("name".into(), Value::from(sample.name.clone()));
+    map.insert("rx_bps".into(), Value::from(sample.rx_bps));
+    map.insert("tx_bps".into(), Value::from(sample.tx_bps));
+    map.insert("rx_total".into(), Value::from(sample.rx_total));
+    map.insert("tx_total".into(), Value::from(sample.tx_total));
+    Value::from(map)
 }
 
 fn filesystem_value(sample: &FilesystemSample) -> Value<'static> {
@@ -622,6 +644,25 @@ pub fn snapshot_from_dbus(dict: &HashMap<String, OwnedValue>) -> anyhow::Result<
         })
         .transpose()?
         .unwrap_or_default();
+    let processes = dict
+        .get("processes")
+        .map(|value| -> anyhow::Result<Vec<ProcessTrafficSample>> {
+            let entries: Vec<HashMap<String, OwnedValue>> = value.try_clone()?.try_into()?;
+            entries
+                .into_iter()
+                .map(|entry| {
+                    Ok(ProcessTrafficSample {
+                        pid: u32::try_from(required(&entry, "pid")?.try_clone()?)?,
+                        name: string(&entry, "name")?,
+                        rx_bps: u64::try_from(required(&entry, "rx_bps")?.try_clone()?)?,
+                        tx_bps: u64::try_from(required(&entry, "tx_bps")?.try_clone()?)?,
+                        rx_total: u64::try_from(required(&entry, "rx_total")?.try_clone()?)?,
+                        tx_total: u64::try_from(required(&entry, "tx_total")?.try_clone()?)?,
+                    })
+                })
+                .collect()
+        })
+        .transpose()?;
 
     Ok(Snapshot {
         ts_ms,
@@ -635,6 +676,7 @@ pub fn snapshot_from_dbus(dict: &HashMap<String, OwnedValue>) -> anyhow::Result<
         filesystems,
         battery,
         uptime_s,
+        processes,
         plugin,
     })
 }
@@ -743,6 +785,10 @@ pub fn config_to_dbus(config: &Config) -> HashMap<String, OwnedValue> {
     top.insert("alerts".into(), owned(alerts_value(&config.alerts)));
     top.insert("overlay".into(), owned(overlay_value(&config.overlay)));
     top.insert("plugins".into(), owned(plugins_value(&config.plugins)));
+    top.insert(
+        "process_traffic".into(),
+        owned(process_traffic_value(&config.process_traffic)),
+    );
     top
 }
 
@@ -805,6 +851,21 @@ fn overlay_value(config: &OverlayConfig) -> Value<'static> {
 fn plugins_value(config: &PluginsConfig) -> Value<'static> {
     let mut map: HashMap<String, Value<'static>> = HashMap::new();
     map.insert("enabled".into(), Value::from(config.enabled));
+    Value::from(map)
+}
+
+fn backend_name(value: ProcessTrafficBackend) -> &'static str {
+    match value {
+        ProcessTrafficBackend::Off => "off",
+        ProcessTrafficBackend::Ebpf => "ebpf",
+        ProcessTrafficBackend::AfPacket => "af_packet",
+        ProcessTrafficBackend::Auto => "auto",
+    }
+}
+
+fn process_traffic_value(config: &ProcessTrafficConfig) -> Value<'static> {
+    let mut map: HashMap<String, Value<'static>> = HashMap::new();
+    map.insert("backend".into(), Value::from(backend_name(config.backend)));
     Value::from(map)
 }
 
@@ -881,6 +942,18 @@ fn parse_units(value: &str) -> Result<RateUnit, String> {
     }
 }
 
+fn parse_backend(value: &str) -> Result<ProcessTrafficBackend, String> {
+    match value {
+        "off" => Ok(ProcessTrafficBackend::Off),
+        "ebpf" => Ok(ProcessTrafficBackend::Ebpf),
+        "af_packet" => Ok(ProcessTrafficBackend::AfPacket),
+        "auto" => Ok(ProcessTrafficBackend::Auto),
+        other => Err(format!(
+            "process_traffic.backend '{other}' must be off, ebpf, af_packet or auto"
+        )),
+    }
+}
+
 fn as_position(value: OwnedValue, path: &str) -> Result<[i32; 2], String> {
     let values =
         Vec::<i32>::try_from(value).map_err(|error| format!("{path}: expected ai: {error}"))?;
@@ -935,6 +1008,10 @@ pub fn apply_config_update(
             "plugins" => {
                 let map = as_map(cloned(value, key)?, key)?;
                 apply_plugins(&mut config.plugins, &map)?;
+            }
+            "process_traffic" => {
+                let map = as_map(cloned(value, key)?, key)?;
+                apply_process_traffic(&mut config.process_traffic, &map)?;
             }
             other => return Err(format!("unknown config key '{other}'")),
         }
@@ -1065,6 +1142,23 @@ fn apply_plugins(
     Ok(())
 }
 
+fn apply_process_traffic(
+    config: &mut ProcessTrafficConfig,
+    map: &HashMap<String, OwnedValue>,
+) -> Result<(), String> {
+    for (key, value) in map {
+        let path = format!("process_traffic.{key}");
+        match key.as_str() {
+            "backend" => {
+                let text = as_string(cloned(value, &path)?, &path)?;
+                config.backend = parse_backend(&text)?;
+            }
+            other => return Err(format!("unknown config key 'process_traffic.{other}'")),
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1151,6 +1245,47 @@ mod tests {
         let mut decoded = Config::default();
         apply_config_update(&mut decoded, &dict).unwrap();
         assert_eq!(decoded, config);
+    }
+
+    #[test]
+    fn process_traffic_snapshot_key_is_optional() {
+        let mut snapshot = snapshot();
+        assert!(!snapshot_to_dbus(&snapshot).contains_key("processes"));
+        snapshot.processes = Some(vec![ProcessTrafficSample {
+            pid: 42,
+            name: "curl".into(),
+            rx_bps: 100,
+            tx_bps: 200,
+            rx_total: 1_000,
+            tx_total: 2_000,
+        }]);
+        let dict = snapshot_to_dbus(&snapshot);
+        assert_eq!(dict["processes"].value_signature().to_string(), "av");
+        let decoded = snapshot_from_dbus(&dict).unwrap();
+        assert_eq!(decoded.processes, snapshot.processes);
+    }
+
+    #[test]
+    fn process_traffic_backend_round_trips_and_rejects_unknown_values() {
+        let mut config = Config::default();
+        let value = owned(process_traffic_value(&ProcessTrafficConfig {
+            backend: ProcessTrafficBackend::Auto,
+        }));
+        apply_config_update(
+            &mut config,
+            &HashMap::from([("process_traffic".to_string(), value)]),
+        )
+        .unwrap();
+        assert_eq!(config.process_traffic.backend, ProcessTrafficBackend::Auto);
+
+        let mut map: HashMap<String, Value<'static>> = HashMap::new();
+        map.insert("backend".into(), Value::from("bogus"));
+        let error = apply_config_update(
+            &mut config,
+            &HashMap::from([("process_traffic".to_string(), owned(Value::from(map)))]),
+        )
+        .unwrap_err();
+        assert!(error.contains("off, ebpf, af_packet or auto"), "{error}");
     }
 
     #[test]

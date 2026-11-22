@@ -16,7 +16,7 @@ use std::{
         Arc, Mutex, MutexGuard,
     },
     thread::{self, JoinHandle},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde::Deserialize;
@@ -239,11 +239,14 @@ pub fn run_plugin_once(
         // 关闭 stdin 表示本次请求结束；插件通常在读到一行后回写响应。
         drop(stdin);
         if let Err(error) = written {
-            let _ = child.kill();
-            let _ = child.wait();
+            // 插件可能在读取请求前就退出（EPIPE）；优先报告真实退出码。
+            let status = reap_after_write_error(&mut child);
             join_thread(stdout_thread);
             join_thread(stderr_thread);
-            return Err(PluginRunError::Write(error));
+            return match status {
+                Some(status) if !status.success() => Err(PluginRunError::Exit(status.code())),
+                _ => Err(PluginRunError::Write(error)),
+            };
         }
     }
 
@@ -282,6 +285,24 @@ pub fn run_plugin_once(
 fn join_thread(handle: Option<JoinHandle<()>>) {
     if let Some(handle) = handle {
         let _ = handle.join();
+    }
+}
+
+/// 写请求失败后短暂等待子进程自行退出，尽量拿到真实退出码；仍存活则 kill。
+fn reap_after_write_error(child: &mut std::process::Child) -> Option<std::process::ExitStatus> {
+    let deadline = Instant::now() + Duration::from_millis(200);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(5));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                return child.wait().ok();
+            }
+            Err(_) => return None,
+        }
     }
 }
 

@@ -163,6 +163,37 @@ M4 只新增可选快照键与一个只读属性，未修改任何既有字段/�
 
 `filesystems`（`av`）、`battery`（`a{sv}`）、`uptime_s`（`t`）、`gpus`（`av`），
 语义见上文；`cpu.freq_mhz`、`cpu.load`、`disk` 与 `temps` 在本阶段开始实际填充。
+可选 `processes`（`av`）表示进程级流量，仅在显式启用后出现，见下节。
+
+### 进程级流量（M4，可选）
+
+`process_traffic.backend` 取值 `off`（默认）`| ebpf | af_packet | auto`。
+user daemon 不直接抓包，只读取 system bus helper 的聚合结果：
+
+```text
+processes  av  [{pid u, name s, rx_bps t, tx_bps t, rx_total t, tx_total t}]
+```
+
+默认 off 或 helper 不可用时省略该键；后端可用但当前无匹配进程时才发送空数组。
+`auto` 优先 eBPF，能力不足再尝试 AF_PACKET。helper 接口：
+
+```text
+NAME: com.trafficview.Ebpf1
+PATH: /com/trafficview/Ebpf1
+Methods: GetProcesses() -> a{sv}, GetBackendStatus() -> a{sv}
+Signals: 无
+```
+
+`GetBackendStatus` 返回 `available b, backend s, reason s, capabilities as`
+（capabilities 为 `ebpf`/`af_packet`）。`GetProcesses` 返回 `processes` 数组；
+helper 按调用者 UID 过滤，user daemon 只保留 Top 10。helper 缺失时
+`CollectorStatus.processes` 为 `available=false`，原因包含
+`trafficviewd-ebpf.service` 安装提示。单次查询上限 1 秒，失败不保留旧排行。
+
+```toml
+[process_traffic]
+backend = "off"   # off | ebpf | af_packet | auto
+```
 
 GPU 后端优先 NVML，失败回退 `nvidia-smi`；AMD 用 `gpu_busy_percent`；Intel 用
 `fdinfo` 引擎差分，中间帧 `stale=true` 且保留原 `observed_at_ms`，超过 15 秒未更新
@@ -188,7 +219,8 @@ GPU 后端优先 NVML，失败回退 `nvidia-smi`；AMD 用 `gpu_busy_percent`�
 `enabled b, metric s, op s, threshold d, duration_s u, cooldown_s u,
 quiet_hours s, level s`）、`overlay a{sv}`（`visible b, position ai, opacity d,
 click_through b, always_on_top b, skin s, units s, items av`，每项
-`id/label/unit/format/color s, visible b`）、`plugins a{sv}`（`enabled b`）。
+`id/label/unit/format/color s, visible b`）、`plugins a{sv}`（`enabled b`）、
+`process_traffic a{sv}`（`backend s`：`off|ebpf|af_packet|auto`）。
 
 顶层缺失键保持不变；嵌套小节按键合并；`rules`/`items` 数组整体替换。
 未知键、类型错误、`Config::validate` 失败或配置的网卡不存在均返回 `InvalidArgs`，

@@ -36,6 +36,7 @@ use crate::{
     history::HistoryStore,
     network::{self, NetSelector},
     plugins::{self, PluginSupervisor},
+    process_traffic::{self, ProcessTrafficHandle},
 };
 
 pub use crate::network::{default_route_interface, parse_default_route};
@@ -82,6 +83,8 @@ pub struct SharedState {
     pub collector_status: BTreeMap<String, CollectorStatus>,
     /// 子进程插件监督器；`None` 表示该入口不加载插件。
     pub plugin_supervisor: Option<Arc<PluginSupervisor>>,
+    /// 可选进程流量消费者；默认 backend=off 时只发布关闭原因。
+    pub process_traffic: Option<Arc<ProcessTrafficHandle>>,
     pub shutdown: watch::Sender<bool>,
 }
 
@@ -130,7 +133,14 @@ pub async fn run_with_options(
             config.plugins.enabled,
         ))
     });
+    let process_backend = config.process_traffic.backend;
+    let process_interval = Duration::from_millis(u64::from(config.sample_interval_ms.max(1000)));
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+    let process_traffic = Arc::new(process_traffic::spawn(
+        process_backend,
+        process_interval,
+        shutdown_tx.subscribe(),
+    ));
     let state = Arc::new(RwLock::new(SharedState {
         config,
         snapshot: None,
@@ -144,6 +154,7 @@ pub async fn run_with_options(
         color_scheme: ColorScheme::Dark,
         collector_status: BTreeMap::new(),
         plugin_supervisor: plugin_supervisor.clone(),
+        process_traffic: Some(process_traffic.clone()),
         shutdown: shutdown_tx,
     }));
     let daemon = Daemon1::new(state.clone(), config_store);
@@ -187,6 +198,7 @@ pub async fn run_with_options(
     if let Some(supervisor) = plugin_supervisor {
         supervisor.stop();
     }
+    process_traffic.stop();
     Ok(())
 }
 
@@ -258,6 +270,7 @@ async fn scheduler(
 ) {
     let mut shutdown = state.read().await.shutdown.subscribe();
     let supervisor = state.read().await.plugin_supervisor.clone();
+    let process_traffic = state.read().await.process_traffic.clone();
     let mut sampler: Option<RuntimeSampler> = None;
     loop {
         let (interval_ms, paused, configured_iface, include_cache, whitelist, blacklist, smoothing) = {
@@ -419,6 +432,16 @@ async fn scheduler(
                 );
             }
         }
+        if let Some(monitor) = &process_traffic {
+            let status = monitor.status();
+            collector_status.insert(
+                "processes".to_string(),
+                CollectorStatus {
+                    available: status.available,
+                    reason: status.reason,
+                },
+            );
+        }
 
         let details = network::discover(&sys_root);
         refresh_interfaces(&state, &context, &details).await;
@@ -499,6 +522,9 @@ async fn scheduler(
         snapshot.uptime_s = uptime_s;
         snapshot.gpu = gpu;
         snapshot.gpus = gpus;
+        snapshot.processes = process_traffic
+            .as_ref()
+            .and_then(|monitor| monitor.processes());
         if let Some(supervisor) = &supervisor {
             snapshot.plugin = supervisor.published_values();
         }

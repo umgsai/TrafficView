@@ -128,6 +128,17 @@ pub struct BatterySample {
     pub status: String,
 }
 
+/// 进程级流量；仅由可选特权 helper 聚合后提供。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProcessTrafficSample {
+    pub pid: u32,
+    pub name: String,
+    pub rx_bps: u64,
+    pub tx_bps: u64,
+    pub rx_total: u64,
+    pub tx_total: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub ts_ms: u64,
@@ -149,6 +160,9 @@ pub struct Snapshot {
     pub battery: Option<BatterySample>,
     #[serde(default)]
     pub uptime_s: Option<u64>,
+    /// 可选：进程级流量；`backend=off` 或 helper 不可用时省略。
+    #[serde(default)]
+    pub processes: Option<Vec<ProcessTrafficSample>>,
     pub plugin: std::collections::BTreeMap<String, String>,
 }
 
@@ -167,6 +181,7 @@ impl Snapshot {
             filesystems: None,
             battery: None,
             uptime_s: None,
+            processes: None,
             plugin: std::collections::BTreeMap::new(),
         }
     }
@@ -207,6 +222,7 @@ mod tests {
         assert!(snapshot.filesystems.is_none());
         assert!(snapshot.battery.is_none());
         assert!(snapshot.uptime_s.is_none());
+        assert!(snapshot.processes.is_none());
         assert!(snapshot.plugin.is_empty());
     }
 }
