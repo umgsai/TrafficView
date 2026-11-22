@@ -43,6 +43,10 @@ trait Daemon1 {
     fn interfaces(&self) -> zbus::Result<Vec<String>>;
     #[zbus(property)]
     fn active_interface(&self) -> zbus::Result<String>;
+    /// 暂停状态只在方法调用时变化且不发 PropertiesChanged，
+    /// 必须标记为不缓存，否则代理会一直返回首次读到的 false。
+    #[zbus(property(emits_changed_signal = "false"))]
+    fn paused(&self) -> zbus::Result<bool>;
 
     #[zbus(signal)]
     fn sample(&self, snapshot: HashMap<String, OwnedValue>) -> zbus::Result<()>;
@@ -378,8 +382,41 @@ impl DbusMenu {
         _timestamp: u32,
         #[zbus(signal_context)] context: SignalContext<'_>,
     ) -> zbus::fdo::Result<()> {
+        if self.apply_event(id, &event_id).await? {
+            let _ = Self::layout_updated(&context, 1, 0).await;
+        }
+        Ok(())
+    }
+
+    /// Cinnamon/xapp-sn-watcher 等宿主用 `EventGroup` 批量投递点击；
+    /// 只实现 `Event` 会导致菜单项点击被宿主静默丢弃。
+    async fn event_group(
+        &self,
+        events: Vec<(i32, String, OwnedValue, u32)>,
+        #[zbus(signal_context)] context: SignalContext<'_>,
+    ) -> zbus::fdo::Result<()> {
+        let mut changed = false;
+        for (id, event_id, _data, _timestamp) in events {
+            changed |= self.apply_event(id, &event_id).await?;
+        }
+        if changed {
+            let _ = Self::layout_updated(&context, 1, 0).await;
+        }
+        Ok(())
+    }
+
+    async fn about_to_show_group(&self, _ids: Vec<i32>) -> (Vec<OwnedObjectPath>, Vec<i32>) {
+        (Vec::new(), Vec::new())
+    }
+
+    async fn about_to_show(&self, _id: i32) -> bool {
+        true
+    }
+
+    /// 返回是否改变了菜单状态（需要广播 LayoutUpdated）。
+    async fn apply_event(&self, id: i32, event_id: &str) -> zbus::fdo::Result<bool> {
         if event_id != "clicked" {
-            return Ok(());
+            return Ok(false);
         }
         let action = match id {
             ITEM_PAUSE => Some((
@@ -421,22 +458,18 @@ impl DbusMenu {
             }
             _ => None,
         };
-        if let Some((method, value)) = action {
-            let result = match method {
-                "Pause" => call_daemon(&self.daemon, "Pause", &(value == "true",)).await,
-                "SetOverlayVisible" => {
-                    call_daemon(&self.daemon, "SetOverlayVisible", &(value == "true",)).await
-                }
-                _ => call_daemon(&self.daemon, "SetActiveInterface", &(value.as_str(),)).await,
-            };
-            result.map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
-            let _ = Self::layout_updated(&context, 1, 0).await;
-        }
-        Ok(())
-    }
-
-    async fn about_to_show(&self, _id: i32) -> bool {
-        true
+        let Some((method, value)) = action else {
+            return Ok(false);
+        };
+        let result = match method {
+            "Pause" => call_daemon(&self.daemon, "Pause", &(value == "true",)).await,
+            "SetOverlayVisible" => {
+                call_daemon(&self.daemon, "SetOverlayVisible", &(value == "true",)).await
+            }
+            _ => call_daemon(&self.daemon, "SetActiveInterface", &(value.as_str(),)).await,
+        };
+        result.map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+        Ok(true)
     }
 
     #[zbus(property)]
@@ -582,6 +615,10 @@ async fn run_async() -> Result<()> {
             }
             Some(_) = config_changes.next() => {
                 refresh_interfaces(&proxy, &model).await;
+                // Pause 不改采样信号，必须从属性同步，否则菜单标签永远显示 Pause。
+                if let Ok(paused) = proxy.paused().await {
+                    model.write().expect("tray model poisoned").paused = paused;
+                }
                 let _ = StatusNotifierItem::new_tool_tip(&item_context).await;
                 let _ = DbusMenu::layout_updated(&menu_context, 1, 0).await;
             }
@@ -616,6 +653,21 @@ async fn run_async() -> Result<()> {
                         }
                     }
                     Err(_) => {
+                        // 暂停时 GetSnapshot 也会报错；此时 daemon 仍然在线，不能显示离线。
+                        if proxy.paused().await.unwrap_or(false) {
+                            let was_offline = {
+                                let mut model = model.write().expect("tray model poisoned");
+                                let was_offline = !model.online;
+                                model.online = true;
+                                model.paused = true;
+                                was_offline
+                            };
+                            if was_offline {
+                                refresh_interfaces(&proxy, &model).await;
+                                let _ = StatusNotifierItem::new_title(&item_context).await;
+                            }
+                            continue;
+                        }
                         {
                             let mut model = model.write().expect("tray model poisoned");
                             model.online = false;

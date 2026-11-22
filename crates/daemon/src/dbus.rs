@@ -72,6 +72,13 @@ impl Daemon1 {
         crate::theme::scheme_name(self.state.read().await.color_scheme).to_owned()
     }
 
+    /// M4 新增只读属性：暂停状态。暂停时 `GetSnapshot` 会报错，
+    /// 前端据此区分“暂停”和“daemon 已退出”，不能把暂停当作离线。
+    #[zbus(property(emits_changed_signal = "false"))]
+    async fn paused(&self) -> bool {
+        self.state.read().await.paused
+    }
+
     /// M4 新增只读属性：各采集器的可用性；值含 `available` 与 `reason`。
     #[zbus(property(emits_changed_signal = "false"))]
     async fn collector_status(&self) -> HashMap<String, OwnedValue> {

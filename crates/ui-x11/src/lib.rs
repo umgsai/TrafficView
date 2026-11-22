@@ -58,6 +58,10 @@ fn parse_scheme(value: &str) -> trafficview_core::ColorScheme {
 pub struct FrameUpdate {
     pub frame: RenderedFrame,
     pub click_through: bool,
+    /// 配置中的悬浮窗可见性；隐藏时不向窗口提交像素。
+    pub visible: bool,
+    /// 配置中的目标位置；仅在与上次应用值不同时移动窗口，避免拖动后被拉回。
+    pub position: (i32, i32),
 }
 
 /// 将窗口位置夹回屏幕内，避免拖出可见区域。
@@ -83,13 +87,14 @@ pub fn run(config: Config) -> Result<()> {
     let (frame_tx, frame_rx) = mpsc::channel::<FrameUpdate>();
     let store = ConfigStore::xdg().ok();
     let initial = config.clone();
-    let x11_thread = thread::spawn(move || x11_loop(initial, frame_rx, store));
+    let x11_store = store.clone();
+    let x11_thread = thread::spawn(move || x11_loop(initial, frame_rx, x11_store));
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("cannot start the overlay runtime")?;
-    let result = runtime.block_on(dbus_loop(config, dpi, frame_tx));
+    let result = runtime.block_on(dbus_loop(config, dpi, frame_tx, store));
     if let Err(error) = &result {
         eprintln!("overlay: {error:#}");
     }
@@ -97,7 +102,12 @@ pub fn run(config: Config) -> Result<()> {
     result
 }
 
-async fn dbus_loop(config: Config, dpi: u32, frames: Sender<FrameUpdate>) -> Result<()> {
+async fn dbus_loop(
+    mut config: Config,
+    dpi: u32,
+    frames: Sender<FrameUpdate>,
+    store: Option<ConfigStore>,
+) -> Result<()> {
     let mut skin_renderer = load_skin_renderer(&config)?;
     let connection = zbus::Connection::session()
         .await
@@ -140,13 +150,23 @@ async fn dbus_loop(config: Config, dpi: u32, frames: Sender<FrameUpdate>) -> Res
                 if changed.is_none() {
                     break;
                 }
+                // ConfigChanged 是托盘/设置窗口改写显示配置的入口：
+                // 必须重新加载，否则可见性、位置、透明度与皮肤都不会生效。
+                if let Some(store) = &store {
+                    if let Ok(next) = store.load() {
+                        if next.overlay.skin != config.overlay.skin {
+                            skin_renderer = load_skin_renderer(&next)?;
+                        }
+                        config = next;
+                    }
+                }
                 if let Ok(value) = proxy.color_scheme().await {
                     scheme = parse_scheme(&value);
                 }
-                // 主题切换时即使采样文本没变也要重绘。
-                if let Some(snapshot) = &last_snapshot {
-                    send_frame(&mut skin_renderer, &config, dpi, scheme, snapshot, &alerts, &frames)?;
-                }
+                // 主题或显示配置变化时即使采样文本没变也要重绘；
+                // 暂停时没有新帧，用空快照保证可见性切换仍能送达窗口线程。
+                let snapshot = last_snapshot.clone().unwrap_or_else(empty_snapshot);
+                send_frame(&mut skin_renderer, &config, dpi, scheme, &snapshot, &alerts, &frames)?;
             }
             signal = alert_stream.next() => {
                 let Some(signal) = signal else { break };
@@ -190,6 +210,8 @@ fn send_frame(
         .send(FrameUpdate {
             frame,
             click_through: config.overlay.click_through,
+            visible: config.overlay.visible,
+            position: (config.overlay.position[0], config.overlay.position[1]),
         })
         .map_err(|_| anyhow::anyhow!("overlay window closed"))
 }
@@ -241,6 +263,9 @@ struct WindowContext {
     gc: u32,
     depth: u8,
     position: (i32, i32),
+    /// 上次从配置应用的位置；只在配置值变化时移动窗口，拖动结束不会被旧值拉回。
+    config_position: (i32, i32),
+    visible: bool,
     size: (u32, u32),
     last_key: String,
     dragging: Option<(i16, i16, i32, i32)>,
@@ -345,7 +370,10 @@ impl WindowContext {
             b"trafficview\0TrafficView\0".len() as u32,
             b"trafficview\0TrafficView\0",
         )?;
-        connection.map_window(window)?;
+        // 配置为隐藏时不映射窗口；之后可通过 ConfigChanged 显示。
+        if config.overlay.visible {
+            connection.map_window(window)?;
+        }
         connection.flush()?;
         let attributes = connection.get_window_attributes(window)?.reply();
         attributes.context("the X server rejected the overlay window")?;
@@ -356,6 +384,8 @@ impl WindowContext {
             gc,
             depth,
             position,
+            config_position: (config.overlay.position[0], config.overlay.position[1]),
+            visible: config.overlay.visible,
             size: (width as u32, height as u32),
             last_key: String::new(),
             dragging: None,
@@ -363,6 +393,17 @@ impl WindowContext {
     }
 
     fn draw(&mut self, update: &FrameUpdate) -> Result<()> {
+        self.apply_position(update.position)?;
+        let became_visible = update.visible && !self.visible;
+        if became_visible {
+            // 重新映射后窗口内容可能已丢失，强制重画一次。
+            self.last_key.clear();
+        }
+        self.set_visible(update.visible)?;
+        if !update.visible {
+            self.connection.flush()?;
+            return Ok(());
+        }
         let frame = &update.frame;
         if (frame.width as u16, frame.height as u16) != (self.size.0 as u16, self.size.1 as u16) {
             self.size = (frame.width, frame.height);
@@ -402,6 +443,43 @@ impl WindowContext {
         self.last_key = frame.cache_key.clone();
         self.apply_click_through(update.click_through)?;
         self.connection.flush()?;
+        Ok(())
+    }
+
+    fn set_visible(&mut self, visible: bool) -> Result<()> {
+        if visible == self.visible {
+            return Ok(());
+        }
+        if visible {
+            self.connection.map_window(self.window)?;
+        } else {
+            self.connection.unmap_window(self.window)?;
+        }
+        self.visible = visible;
+        Ok(())
+    }
+
+    /// 只响应配置值的变化；拖动时窗口位置由事件循环维护，不会被旧配置拉回。
+    fn apply_position(&mut self, requested: (i32, i32)) -> Result<()> {
+        if requested == self.config_position {
+            return Ok(());
+        }
+        self.config_position = requested;
+        if self.dragging.is_some() {
+            return Ok(());
+        }
+        let (screen_w, screen_h) = {
+            let screen = &self.connection.setup().roots[self.screen_num];
+            (screen.width_in_pixels, screen.height_in_pixels)
+        };
+        let (x, y) = clamp_position(requested, self.size, (screen_w, screen_h));
+        if (x, y) != self.position {
+            self.position = (x, y);
+            self.connection.configure_window(
+                self.window,
+                &x11rb::protocol::xproto::ConfigureWindowAux::new().x(x).y(y),
+            )?;
+        }
         Ok(())
     }
 
