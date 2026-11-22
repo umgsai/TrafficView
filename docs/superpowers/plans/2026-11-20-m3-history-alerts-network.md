@@ -350,3 +350,37 @@ git commit -m "feat: follow the desktop color scheme"
 ```
 
 M3 完成条件：数据库、告警、网络 fixture 测试全部通过，真实重启/休眠连续性和主题切换通过，M0–M2 无回归。
+
+---
+
+## 执行记录（2026-11-22，本机 Cinnamon / X11）
+
+已完成并留下真实输出：
+
+- `cargo test -p trafficview-daemon --test history`（13 项）、`--test network`（7 项）、
+  `--test alerts`（6 项）、`cargo test --workspace` 与
+  `dbus-run-session -- cargo test -p trafficview-daemon --test dbus`（4 项）全部通过。
+- 真实 daemon 使用 netlink `IFLA_STATS64` 作为主数据源（日志
+  `network counter baseline established source="netlink"`）；历史库写入
+  `$XDG_DATA_HOME/trafficview/history.db`，`trafficview history today|month --json`
+  返回真实字节增量。
+- 停止临时 daemon 再启动后，`traffic_day` 累计继续增加、游标未清零。
+- 用临时配置（`cpu_pct > 0.1`、`duration_s=1`）真实触发 `cpu.high`：
+  `dbus-monitor` 捕获到 `Alert` 信号，以及发往 Cinnamon 通知服务的
+  `org.freedesktop.Notifications.Notify`，内容为
+  `TrafficView 告警 / CPU 使用率 … 超过阈值 0.1（持续 1 秒）`。
+- 通过 `gsettings set org.gnome.desktop.interface color-scheme prefer-light`
+  实测 portal 值 0→2→0，daemon 日志与 `ColorScheme` 属性同步 dark→light→dark，
+  已恢复原设置。深浅色观感仍需人工确认。
+- 三个 systemd --user 单元用 release 产物干净重启，各仅一个实例。
+
+未完成/未验证（不得当作已验收）：
+
+- 真实热插拔与自动切卡：本机只有 `lo` 和 `enp0s3` 两个接口，且无
+  `CAP_NET_ADMIN`/sudo，无法创建 dummy/veth 或切换默认路由。选择顺序由
+  fixture 测试覆盖，真实 daemon 只验证了自动选中默认路由 `enp0s3`。
+- overlay 的告警 item 变色未实现；当前告警通过 D-Bus `Alert` 信号、托盘
+  tooltip 与桌面通知呈现。
+- 桌面通知仅验证“通知服务收到 Notify 且内容正确”，弹窗外观未人工确认。
+- Wayland/GNOME 的真实主题重绘未在对应会话验收（本机无该会话）。
+

@@ -96,3 +96,56 @@ M2 没有新增 D-Bus 成员，也没有修改任何既有字段的名称、类�
   `class="disconnected"` 的单行 JSON；这是 CLI 行为，不改变 D-Bus 错误语义。
 - 相反，daemon 暂停时 `GetSnapshot` 仍返回 `Failed("daemon is paused")`。
 
+## M3 增量（非破坏）
+
+M3 只新增成员，未修改任何既有字段/信号语义。
+
+### 新增 Properties
+
+| 名称 | 类型 | 语义 |
+|---|---|---|
+| `ColorScheme` | `s` | `light` 或 `dark`；由 portal 与用户 `theme` 配置决定，变化时触发 `ConfigChanged` |
+
+### 新增 Methods
+
+| 名称 | 签名 | 语义 |
+|---|---|---|
+| `GetTrafficSummary` | `ss -> a{sv}` | `(scope, iface_stable)`；scope 只接受 `day`/`month`，否则 `InvalidArgs`；空 stable 表示所有网卡求和 |
+| `GetInterfaceDetails` | `() -> a{sv}` | 键为接口名，值为 `a{sv}`：`stable s, mac s, ifindex u, operstate s, carrier b, loopback b, active b` |
+
+`GetTrafficSummary` 返回键固定为：
+
+```text
+scope        s    day | month
+start        s    day: YYYY-MM-DD；month: 当月首日
+end          s    day: YYYY-MM-DD；month: 当月末日
+rx           t    原始字节增量总和
+tx           t    原始字节增量总和
+interfaces   av   [{stable s, name s, rx t, tx t}]
+```
+
+历史库不可用时返回 `Failed("traffic history is unavailable")`，不得伪造 0 值。
+原 `Interfaces` 属性保持 `as` 兼容，新增详情只走 `GetInterfaceDetails`。
+
+### Alert 信号语义补充
+
+`Alert(sss)` 的签名不变。M3 开始实际产生事件：越限事件 `level` 取规则配置
+（`info`/`warning`/`critical`），恢复事件固定为 `info`，`code` 与越限事件一致，
+消息以“已恢复”开头。前端可据此清除告警色。
+
+### 配置新增
+
+```toml
+theme = "auto"                 # auto | light | dark
+network_smoothing = "none"     # none | moving_average_3 | ema
+interface_whitelist = []       # 优先于默认路由
+[history]
+retention_days = 90
+timezone = ""                  # 空=系统本地；或 UTC / +08:00
+[alerts]
+rules = []                     # 默认不启用，避免升级后突然打扰
+```
+
+每条告警规则：`enabled/metric/op/threshold/duration_s/cooldown_s/quiet_hours/level`；
+`metric` 取值 `cpu_pct|mem_pct|net_rx_bps|net_tx_bps|month_bytes`。
+
