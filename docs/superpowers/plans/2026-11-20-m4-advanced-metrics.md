@@ -419,6 +419,9 @@ Task 4 部分完成（daemon 消费者与降级契约；特权 helper 未实现�
   `auto` 优先 eBPF，能力不足再 AF_PACKET，缺失时给出 systemd 安装提示。
 - 新增 9 项 `process_traffic` 单元测试，以及 D-Bus 集成断言（默认省略、
   `CollectorStatus.processes` 关闭原因、配置往返与非法 backend）。
+- `UpdateConfig` 修改 backend 或采样周期后热重启消费者；实机验证
+  `ebpf -> com.trafficview.Ebpf1 is not running; install and enable
+  trafficviewd-ebpf.service`，恢复 `off` 后配置与状态同步。
 - 质量门通过：`cargo clippy --workspace --all-targets -- -D warnings`、
   `cargo check -p trafficview-daemon --no-default-features`、
   `dbus-run-session -- cargo test --workspace`。

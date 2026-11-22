@@ -5,6 +5,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
+    time::Duration,
 };
 
 use chrono::Utc;
@@ -101,6 +102,8 @@ impl Daemon1 {
         updates: HashMap<String, OwnedValue>,
     ) -> zbus::fdo::Result<()> {
         let mut state = self.state.write().await;
+        let previous_backend = state.config.process_traffic.backend;
+        let previous_interval_ms = state.config.sample_interval_ms;
         let mut config = state.config.clone();
         apply_config_update(&mut config, &updates).map_err(zbus::fdo::Error::InvalidArgs)?;
         config.validate().map_err(zbus::fdo::Error::InvalidArgs)?;
@@ -121,15 +124,26 @@ impl Daemon1 {
         }
         let rules = config.alerts.rules.clone();
         let plugins_enabled = config.plugins.enabled;
+        let process_backend = config.process_traffic.backend;
+        let process_interval =
+            Duration::from_millis(u64::from(config.sample_interval_ms.max(1000)));
+        let process_changed = process_backend != previous_backend
+            || config.sample_interval_ms != previous_interval_ms;
         state.config = config;
         state.color_scheme = crate::theme::decide(state.config.theme, state.portal_scheme);
         if let Ok(mut engine) = state.alerts.lock() {
             engine.reload(&rules);
         }
         let supervisor = state.plugin_supervisor.clone();
+        let process_traffic = state.process_traffic.clone();
         drop(state);
         if let Some(supervisor) = supervisor {
             supervisor.reload(plugins_enabled);
+        }
+        if let Some(monitor) = process_traffic {
+            if process_changed {
+                monitor.restart(process_backend, process_interval);
+            }
         }
         let _ = Daemon1::config_changed(&context).await;
         Ok(())

@@ -53,6 +53,7 @@ struct Cache {
 pub struct ProcessTrafficHandle {
     cache: Arc<Mutex<Cache>>,
     task: Mutex<Option<JoinHandle<()>>>,
+    shutdown: watch::Receiver<bool>,
 }
 
 impl ProcessTrafficHandle {
@@ -62,6 +63,28 @@ impl ProcessTrafficHandle {
 
     pub fn status(&self) -> ProcessTrafficStatus {
         lock(&self.cache).status.clone()
+    }
+
+    /// `UpdateConfig` 修改 backend 或采样周期后重启查询任务。
+    pub fn restart(&self, backend: ProcessTrafficBackend, interval: Duration) {
+        let mut slot = lock(&self.task);
+        if let Some(task) = slot.take() {
+            task.abort();
+        }
+        {
+            let mut cache = lock(&self.cache);
+            cache.processes = None;
+            cache.status = ProcessTrafficStatus {
+                available: false,
+                reason: initial_reason(backend).into(),
+            };
+        }
+        *slot = Some(tokio::spawn(run(
+            self.cache.clone(),
+            backend,
+            interval,
+            self.shutdown.clone(),
+        )));
     }
 
     /// 停止后台任务；可重复调用。
@@ -94,23 +117,28 @@ pub fn spawn(
     interval: Duration,
     shutdown: watch::Receiver<bool>,
 ) -> ProcessTrafficHandle {
-    let reason = if backend == ProcessTrafficBackend::Off {
-        "process traffic backend is off"
-    } else {
-        "waiting for the process traffic helper"
-    };
     let cache = Arc::new(Mutex::new(Cache {
         processes: None,
         status: ProcessTrafficStatus {
             available: false,
-            reason: reason.into(),
+            reason: initial_reason(backend).into(),
         },
     }));
     let task_cache = cache.clone();
-    let task = tokio::spawn(run(task_cache, backend, interval, shutdown));
+    let task_shutdown = shutdown.clone();
+    let task = tokio::spawn(run(task_cache, backend, interval, task_shutdown));
     ProcessTrafficHandle {
         cache,
         task: Mutex::new(Some(task)),
+        shutdown,
+    }
+}
+
+fn initial_reason(backend: ProcessTrafficBackend) -> &'static str {
+    if backend == ProcessTrafficBackend::Off {
+        "process traffic backend is off"
+    } else {
+        "waiting for the process traffic helper"
     }
 }
 

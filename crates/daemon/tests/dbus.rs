@@ -169,6 +169,12 @@ fn history_value(days: u32) -> OwnedValue {
     OwnedValue::try_from(Value::from(map)).unwrap()
 }
 
+fn process_backend_value(backend: &str) -> OwnedValue {
+    let mut map: HashMap<String, Value<'static>> = HashMap::new();
+    map.insert("backend".into(), Value::from(backend.to_owned()));
+    OwnedValue::try_from(Value::from(map)).unwrap()
+}
+
 #[tokio::test]
 async fn config_api_round_trips_and_rejects_invalid_updates_atomically() {
     let _guard = BUS_LOCK.lock().await;
@@ -264,6 +270,56 @@ async fn concurrent_config_updates_do_not_lose_fields() {
     let saved = ConfigStore::at(harness.config_path()).load().unwrap();
     assert!(saved.memory_include_cache);
     assert_eq!(saved.history.retention_days, 30);
+}
+
+#[tokio::test]
+async fn process_traffic_backend_change_is_hot_applied() {
+    let _guard = BUS_LOCK.lock().await;
+    let harness = TestDaemon::spawn().await.unwrap();
+    let proxy = harness.proxy().await.unwrap();
+    proxy
+        .update_config(HashMap::from([(
+            "process_traffic".into(),
+            process_backend_value("ebpf"),
+        )]))
+        .await
+        .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let status = harness
+            .proxy()
+            .await
+            .unwrap()
+            .collector_status()
+            .await
+            .unwrap();
+        let entry: HashMap<String, OwnedValue> =
+            status["processes"].try_clone().unwrap().try_into().unwrap();
+        let available = bool::try_from(&entry["available"]).unwrap();
+        let reason = String::try_from(entry["reason"].try_clone().unwrap()).unwrap();
+        if !available && !reason.contains("off") {
+            assert!(
+                reason.contains("trafficviewd-ebpf.service")
+                    || reason.contains("system D-Bus")
+                    || reason.contains("helper"),
+                "unexpected reason after hot reload: {reason}"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "backend change was not applied: {reason}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    proxy
+        .update_config(HashMap::from([(
+            "process_traffic".into(),
+            process_backend_value("off"),
+        )]))
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

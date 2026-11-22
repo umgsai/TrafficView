@@ -189,6 +189,8 @@ Signals: 无
 helper 按调用者 UID 过滤，user daemon 只保留 Top 10。helper 缺失时
 `CollectorStatus.processes` 为 `available=false`，原因包含
 `trafficviewd-ebpf.service` 安装提示。单次查询上限 1 秒，失败不保留旧排行。
+`UpdateConfig` 修改 `backend` 或 `sample_interval_ms` 后 daemon 立即重启消费者，
+无需重启进程；查询周期取 `sample_interval_ms`，下限 1 秒。
 
 ```toml
 [process_traffic]
