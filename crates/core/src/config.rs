@@ -27,7 +27,94 @@ pub struct Config {
     /// false 使用 `MemTotal - MemAvailable`，true 使用 `MemTotal - MemFree`。
     pub memory_include_cache: bool,
     pub interface_blacklist: Vec<String>,
+    /// 优先选择的白名单；命中且接口存在时高于默认路由规则。
+    pub interface_whitelist: Vec<String>,
+    /// 展示速率平滑；历史累计始终使用原始计数器。
+    pub network_smoothing: NetworkSmoothing,
+    /// `auto` 跟随桌面 portal，`light`/`dark` 强制指定。
+    pub theme: ThemeMode,
+    pub history: HistoryConfig,
+    pub alerts: AlertsConfig,
     pub overlay: OverlayConfig,
+}
+
+/// 展示速率平滑算法；默认不改变原始速率。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkSmoothing {
+    #[default]
+    None,
+    MovingAverage3,
+    Ema,
+}
+
+/// 深色/浅色主题选择。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeMode {
+    #[default]
+    Auto,
+    Light,
+    Dark,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HistoryConfig {
+    /// 分钟明细保留天数；日汇总不受清理影响。
+    pub retention_days: u32,
+    /// 空字符串表示系统本地时区；也接受 `UTC` 或 `+08:00`。
+    pub timezone: String,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self {
+            retention_days: 90,
+            timezone: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AlertsConfig {
+    /// 默认不启用任何规则，避免升级后突然打扰用户。
+    pub rules: Vec<AlertRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AlertRule {
+    pub enabled: bool,
+    /// `cpu_pct`、`mem_pct`、`net_rx_bps`、`net_tx_bps`、`month_bytes`。
+    pub metric: String,
+    /// `>`、`>=`、`<`、`<=`。
+    pub op: String,
+    pub threshold: f64,
+    /// 连续满足条件的秒数。
+    pub duration_s: u32,
+    /// 恢复后再次通知的最短间隔秒数。
+    pub cooldown_s: u32,
+    /// 形如 `23:00-07:00`，可跨午夜；空表示不静默。
+    pub quiet_hours: String,
+    /// `info`、`warning`、`critical`。
+    pub level: String,
+}
+
+impl Default for AlertRule {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            metric: "cpu_pct".into(),
+            op: ">".into(),
+            threshold: 90.0,
+            duration_s: 10,
+            cooldown_s: 300,
+            quiet_hours: String::new(),
+            level: "warning".into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -79,6 +166,11 @@ impl Default for Config {
                 "virbr*".into(),
                 "tun*".into(),
             ],
+            interface_whitelist: Vec::new(),
+            network_smoothing: NetworkSmoothing::None,
+            theme: ThemeMode::Auto,
+            history: HistoryConfig::default(),
+            alerts: AlertsConfig::default(),
             overlay: OverlayConfig::default(),
         }
     }
@@ -176,8 +268,81 @@ impl Config {
                 return Err(format!("duplicate overlay item id: {}", item.id));
             }
         }
+        if !(1..=3650).contains(&self.history.retention_days) {
+            return Err("history.retention_days must be within 1..=3650".into());
+        }
+        if !self.history.timezone.is_empty()
+            && self.history.timezone != "UTC"
+            && parse_offset_minutes(&self.history.timezone).is_none()
+        {
+            return Err(format!(
+                "history.timezone '{}' must be empty, UTC or +HH:MM/-HH:MM",
+                self.history.timezone
+            ));
+        }
+        for rule in &self.alerts.rules {
+            if !matches!(
+                rule.metric.as_str(),
+                "cpu_pct" | "mem_pct" | "net_rx_bps" | "net_tx_bps" | "month_bytes"
+            ) {
+                return Err(format!("alerts rule metric '{}' is not supported", rule.metric));
+            }
+            if !matches!(rule.op.as_str(), ">" | ">=" | "<" | "<=") {
+                return Err(format!("alerts rule op '{}' is not supported", rule.op));
+            }
+            if !rule.threshold.is_finite() || rule.threshold < 0.0 {
+                return Err("alerts rule threshold must be a non-negative number".into());
+            }
+            if !matches!(rule.level.as_str(), "info" | "warning" | "critical") {
+                return Err(format!("alerts rule level '{}' is not supported", rule.level));
+            }
+            if !rule.quiet_hours.is_empty() && !valid_quiet_hours(&rule.quiet_hours) {
+                return Err(format!(
+                    "alerts rule quiet_hours '{}' must be HH:MM-HH:MM",
+                    rule.quiet_hours
+                ));
+            }
+        }
         Ok(())
     }
+}
+
+/// 解析 `+08:00` / `-05:30` 为分钟偏移；不支持 `UTC` 字样。
+pub fn parse_offset_minutes(value: &str) -> Option<i32> {
+    let (sign, rest) = match value.as_bytes().first()? {
+        b'+' => (1, &value[1..]),
+        b'-' => (-1, &value[1..]),
+        _ => return None,
+    };
+    let (hours, minutes) = rest.split_once(':')?;
+    if hours.len() != 2 || minutes.len() != 2 {
+        return None;
+    }
+    let hours: i32 = hours.parse().ok()?;
+    let minutes: i32 = minutes.parse().ok()?;
+    if hours > 23 || minutes > 59 {
+        return None;
+    }
+    Some(sign * (hours * 60 + minutes))
+}
+
+/// 校验 `HH:MM-HH:MM`；允许跨午夜。
+pub fn valid_quiet_hours(value: &str) -> bool {
+    let Some((start, end)) = value.split_once('-') else {
+        return false;
+    };
+    parse_hhmm(start).is_some() && parse_hhmm(end).is_some()
+}
+
+/// 解析 `HH:MM` 为当日分钟数。
+pub fn parse_hhmm(value: &str) -> Option<u32> {
+    let (hours, minutes) = value.split_once(':')?;
+    if hours.len() != 2 || minutes.len() != 2 {
+        return None;
+    }
+    let hours: u32 = hours.parse().ok()?;
+    let minutes: u32 = minutes.parse().ok()?;
+    (hours < 24 && minutes < 60).then_some(hours * 60 + minutes)
 }
 
 #[derive(Debug)]

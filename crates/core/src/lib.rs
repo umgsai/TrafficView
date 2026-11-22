@@ -1,8 +1,62 @@
 pub mod clock;
 pub mod config;
 pub mod format;
+pub mod smoothing;
 
 use serde::{Deserialize, Serialize};
+
+/// 网卡枚举结果；ifindex 只用于当次事件关联，跨重启唯一键是 `stable`。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InterfaceInfo {
+    pub name: String,
+    pub ifindex: u32,
+    /// `mac:<小写MAC>`；无永久 MAC 时为 `name:<接口名>`。
+    pub stable: String,
+    pub mac: Option<String>,
+    pub operstate: String,
+    pub carrier: bool,
+    pub is_loopback: bool,
+}
+
+/// 某网卡在一个统计区间内的原始字节增量。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InterfaceTraffic {
+    pub stable: String,
+    pub name: String,
+    pub rx: u64,
+    pub tx: u64,
+}
+
+/// `scope=day|month` 的流量汇总；`interfaces` 为各网卡分解。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TrafficSummary {
+    pub scope: String,
+    pub start: String,
+    pub end: String,
+    pub rx: u64,
+    pub tx: u64,
+    pub interfaces: Vec<InterfaceTraffic>,
+}
+
+/// 告警状态机事件；`active=false` 表示恢复。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AlertEvent {
+    pub level: String,
+    pub code: String,
+    pub message: String,
+    pub active: bool,
+    /// 事件产生的墙上时间（Unix 秒），用于冷却与去重展示。
+    pub ts_secs: i64,
+}
+
+/// 当前桌面配色，仅用于渲染资源选择。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ColorScheme {
+    #[default]
+    Dark,
+    Light,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NetSample {

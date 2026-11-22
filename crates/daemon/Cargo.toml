@@ -20,6 +20,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zbus = { version = "4", default-features = false, features = ["tokio"] }
 trafficview-core = { path = "../core" }
 trafficview-collectors = { path = "../collectors" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+globset = "0.4"
 
 [dev-dependencies]
 futures-util = "0.3"
