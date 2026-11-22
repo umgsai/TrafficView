@@ -190,3 +190,82 @@ fn fixed_layout_render_includes_scheme_in_the_cache_key() {
     );
     assert_ne!(dark.cache_key, light.cache_key);
 }
+
+#[test]
+fn alert_events_map_to_items_and_recovery_clears_only_that_alert() {
+    let mut alerts = trafficview_render::AlertState::default();
+    assert!(alerts.apply_event("info", "cpu.high", "CPU 使用率 95.0 超过阈值 90.0"));
+    assert!(alerts.apply_event("warning", "mem.high", "内存使用率 95.0 超过阈值 90.0"));
+    assert!(alerts.apply_event("warning", "net.rx.high", "下载速率超过阈值"));
+    assert!(alerts.apply_event("critical", "net.tx.high", "上传速率超过阈值"));
+    assert_eq!(alerts.color_for("cpu"), Some("#7FD1FF"));
+    assert_eq!(alerts.color_for("mem"), Some("#FFC107"));
+    assert_eq!(alerts.color_for("net_down"), Some("#FFC107"));
+    assert_eq!(alerts.color_for("net_up"), Some("#F44336"));
+    assert!(!alerts.apply_event("critical", "month.quota", "月流量超过配额"));
+
+    assert!(alerts.apply_event("info", "cpu.high", "CPU 使用率 已恢复（当前 10.0）"));
+    assert_eq!(alerts.color_for("cpu"), None);
+    assert_eq!(alerts.color_for("mem"), Some("#FFC107"));
+    assert!(!alerts.apply_event("info", "cpu.high", "CPU 使用率 已恢复（当前 10.0）"));
+}
+
+#[test]
+fn skin_alert_changes_pixels_and_cache_then_recovery_restores_both() {
+    let skin = Skin::parse(
+        "[meta]\nname='alerts'\n[canvas]\nwidth=120\nheight=40\nbackground_color='#101010'\n[[item]]\nid='cpu'\nrect=[4,4,112,32]",
+        Path::new("fixture"),
+    )
+    .unwrap();
+    let mut renderer = Renderer::new(skin).unwrap();
+    let normal = renderer.render(&snapshot(), 1.0).unwrap();
+    let mut alerts = trafficview_render::AlertState::default();
+    alerts.apply_event("critical", "cpu.high", "CPU 使用率 99.0 超过阈值 90.0");
+    let alerted = renderer
+        .render_with_alerts(&snapshot(), 1.0, &alerts)
+        .unwrap();
+    assert_ne!(normal.cache_key, alerted.cache_key);
+    assert_ne!(normal.argb, alerted.argb);
+    assert_eq!(normal.regions, alerted.regions);
+
+    alerts.apply_event("info", "cpu.high", "CPU 使用率 已恢复（当前 10.0）");
+    let recovered = renderer
+        .render_with_alerts(&snapshot(), 1.0, &alerts)
+        .unwrap();
+    assert_eq!(normal.cache_key, recovered.cache_key);
+    assert_eq!(normal.argb, recovered.argb);
+}
+
+#[test]
+fn fixed_layout_alert_changes_pixels_and_cache_then_recovery_restores_both() {
+    let config = trafficview_core::config::Config::default();
+    let normal = trafficview_render::render_with_scheme(
+        &snapshot(),
+        &config,
+        96,
+        trafficview_core::ColorScheme::Dark,
+    );
+    let mut alerts = trafficview_render::AlertState::default();
+    alerts.apply_event("warning", "net.rx.high", "下载速率超过阈值");
+    let alerted = trafficview_render::render_with_scheme_and_alerts(
+        &snapshot(),
+        &config,
+        96,
+        trafficview_core::ColorScheme::Dark,
+        &alerts,
+    );
+    assert_ne!(normal.cache_key, alerted.cache_key);
+    assert_ne!(normal.argb, alerted.argb);
+    assert_eq!(normal.regions, alerted.regions);
+
+    alerts.apply_event("info", "net.rx.high", "下载速率 已恢复（当前 0.0）");
+    let recovered = trafficview_render::render_with_scheme_and_alerts(
+        &snapshot(),
+        &config,
+        96,
+        trafficview_core::ColorScheme::Dark,
+        &alerts,
+    );
+    assert_eq!(normal.cache_key, recovered.cache_key);
+    assert_eq!(normal.argb, recovered.argb);
+}

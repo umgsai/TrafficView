@@ -11,13 +11,14 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use futures_util::StreamExt;
 use trafficview_core::{config::Config, ColorScheme, Snapshot};
-use trafficview_render::{skin::Skin, RenderedFrame, Renderer};
+use trafficview_render::{skin::Skin, AlertState, RenderedFrame, Renderer};
 
-/// 快照与当前配色；主题变化时前端不需要重新查询 portal。
+/// 快照、当前配色与告警；前端不需要各自订阅 portal 或修改渲染配置。
 #[derive(Debug, Clone)]
 pub(crate) struct SnapshotUpdate {
     pub snapshot: Snapshot,
     pub scheme: ColorScheme,
+    pub alerts: AlertState,
 }
 
 /// 会话后端选择。GNOME 明确不支持 layer-shell，必须走普通窗口。
@@ -179,18 +180,20 @@ impl FrameSource {
         snapshot: &Snapshot,
         scale: f64,
         scheme: ColorScheme,
+        alerts: &AlertState,
     ) -> Result<RenderedFrame> {
         match self {
-            Self::Fixed(config) => Ok(trafficview_render::render_with_scheme(
+            Self::Fixed(config) => Ok(trafficview_render::render_with_scheme_and_alerts(
                 snapshot,
                 config,
                 (96.0 * scale).round().max(1.0) as u32,
                 scheme,
+                alerts,
             )),
             Self::Skin(renderer) => {
                 renderer.set_color_scheme(scheme);
                 renderer
-                    .render(snapshot, scale as f32)
+                    .render_with_alerts(snapshot, scale as f32, alerts)
                     .map_err(|error| anyhow::anyhow!(error))
             }
         }
@@ -234,13 +237,21 @@ async fn stream_once(sender: &std::sync::mpsc::Sender<SnapshotUpdate>) -> Result
     .await
     .context("cannot build the trafficviewd proxy")?;
     let mut scheme = read_scheme(&proxy).await;
+    let mut alerts = AlertState::default();
     let mut last: Option<Snapshot> = None;
     if let Ok(reply) = proxy.call_method("GetSnapshot", &()).await {
         let dict: std::collections::HashMap<String, zbus::zvariant::OwnedValue> =
             reply.body().deserialize()?;
         let snapshot = trafficview_daemon::dbus::snapshot_from_dbus(&dict)?;
         last = Some(snapshot.clone());
-        if sender.send(SnapshotUpdate { snapshot, scheme }).is_err() {
+        if sender
+            .send(SnapshotUpdate {
+                snapshot,
+                scheme,
+                alerts: alerts.clone(),
+            })
+            .is_err()
+        {
             bail!("overlay receiver closed");
         }
     }
@@ -252,6 +263,10 @@ async fn stream_once(sender: &std::sync::mpsc::Sender<SnapshotUpdate>) -> Result
         .receive_signal("ConfigChanged")
         .await
         .context("cannot subscribe to ConfigChanged")?;
+    let mut alert_signals = proxy
+        .receive_signal("Alert")
+        .await
+        .context("cannot subscribe to Alert")?;
     loop {
         tokio::select! {
             message = samples.next() => {
@@ -260,7 +275,7 @@ async fn stream_once(sender: &std::sync::mpsc::Sender<SnapshotUpdate>) -> Result
                     message.body().deserialize()?;
                 let snapshot = trafficview_daemon::dbus::snapshot_from_dbus(&dict)?;
                 last = Some(snapshot.clone());
-                if sender.send(SnapshotUpdate { snapshot, scheme }).is_err() {
+                if sender.send(SnapshotUpdate { snapshot, scheme, alerts: alerts.clone() }).is_err() {
                     break;
                 }
             }
@@ -270,8 +285,19 @@ async fn stream_once(sender: &std::sync::mpsc::Sender<SnapshotUpdate>) -> Result
                 }
                 scheme = read_scheme(&proxy).await;
                 if let Some(snapshot) = &last {
-                    if sender.send(SnapshotUpdate { snapshot: snapshot.clone(), scheme }).is_err() {
+                    if sender.send(SnapshotUpdate { snapshot: snapshot.clone(), scheme, alerts: alerts.clone() }).is_err() {
                         break;
+                    }
+                }
+            }
+            message = alert_signals.next() => {
+                let Some(message) = message else { break };
+                let (level, code, text): (String, String, String) = message.body().deserialize()?;
+                if alerts.apply_event(&level, &code, &text) {
+                    if let Some(snapshot) = &last {
+                        if sender.send(SnapshotUpdate { snapshot: snapshot.clone(), scheme, alerts: alerts.clone() }).is_err() {
+                            break;
+                        }
                     }
                 }
             }

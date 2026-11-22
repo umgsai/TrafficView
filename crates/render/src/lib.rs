@@ -4,7 +4,10 @@ pub mod nine_patch;
 pub mod skin;
 pub mod value;
 
-use std::sync::{Mutex, OnceLock};
+use std::{
+    collections::BTreeMap,
+    sync::{Mutex, OnceLock},
+};
 
 use cosmic_text::{
     Attrs, Buffer, Color as TextColor, Family, FontSystem, Metrics, Shaping, SwashCache,
@@ -24,6 +27,71 @@ const ROW_HEIGHT: f32 = 24.0;
 const PADDING: f32 = 8.0;
 const BASE_WIDTH: f32 = 220.0;
 const FONT_SIZE: f32 = 14.0;
+
+/// 前端从 D-Bus Alert 信号维护的活动告警；只覆盖显示颜色，不修改皮肤或配置。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AlertState {
+    active: BTreeMap<String, ActiveAlert>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ActiveAlert {
+    item_id: &'static str,
+    color: &'static str,
+}
+
+impl AlertState {
+    /// 应用一条 Alert 信号，返回显示状态是否发生变化。
+    pub fn apply_event(&mut self, level: &str, code: &str, message: &str) -> bool {
+        let Some(item_id) = alert_item_id(code) else {
+            return false;
+        };
+        // daemon 的恢复消息当前带有指标标签，兼容“已恢复”位于开头或标签之后。
+        if message.contains("已恢复") {
+            return self.active.remove(code).is_some();
+        }
+        let color = match level {
+            "info" => "#7FD1FF",
+            "warning" => "#FFC107",
+            "critical" => "#F44336",
+            _ => return false,
+        };
+        let alert = ActiveAlert { item_id, color };
+        if self.active.get(code) == Some(&alert) {
+            return false;
+        }
+        self.active.insert(code.to_owned(), alert);
+        true
+    }
+
+    pub fn color_for(&self, item_id: &str) -> Option<&'static str> {
+        self.active
+            .values()
+            .find(|alert| alert.item_id == item_id)
+            .map(|alert| alert.color)
+    }
+
+    fn cache_key(&self) -> String {
+        let mut key = String::new();
+        for (code, alert) in &self.active {
+            key.push_str(code);
+            key.push('=');
+            key.push_str(alert.color);
+            key.push(',');
+        }
+        key
+    }
+}
+
+fn alert_item_id(code: &str) -> Option<&'static str> {
+    match code {
+        "cpu.high" => Some("cpu"),
+        "mem.high" => Some("mem"),
+        "net.rx.high" => Some("net_down"),
+        "net.tx.high" => Some("net_up"),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LayoutItem {
@@ -117,25 +185,34 @@ impl Renderer {
     }
 
     pub fn render(&mut self, snapshot: &Snapshot, scale: f32) -> Result<RenderedFrame, SkinError> {
+        self.render_with_alerts(snapshot, scale, &AlertState::default())
+    }
+
+    pub fn render_with_alerts(
+        &mut self,
+        snapshot: &Snapshot,
+        scale: f32,
+        alerts: &AlertState,
+    ) -> Result<RenderedFrame, SkinError> {
         let scale = if scale.is_finite() && scale > 0.0 {
             scale
         } else {
             1.0
         };
-        let key = self.cache_key(snapshot, scale);
+        let key = self.cache_key(snapshot, scale, alerts);
         if self.last_key.as_deref() == Some(key.as_str()) {
             if let Some(frame) = &self.last_frame {
                 return Ok(frame.clone());
             }
         }
-        let frame = self.rasterize(snapshot, scale)?;
+        let frame = self.rasterize(snapshot, scale, alerts)?;
         self.last_key = Some(key);
         self.last_frame = Some(frame.clone());
         self.rasterize_count += 1;
         Ok(frame)
     }
 
-    fn cache_key(&self, snapshot: &Snapshot, scale: f32) -> String {
+    fn cache_key(&self, snapshot: &Snapshot, scale: f32, alerts: &AlertState) -> String {
         let mut key = format!(
             "{:016x}:{scale:.4}:{:.3}:{}:",
             self.skin.content_hash,
@@ -156,6 +233,7 @@ impl Renderer {
             ));
             key.push(',');
         }
+        key.push_str(&alerts.cache_key());
         key
     }
 
@@ -166,7 +244,12 @@ impl Renderer {
         }
     }
 
-    fn rasterize(&self, snapshot: &Snapshot, scale: f32) -> Result<RenderedFrame, SkinError> {
+    fn rasterize(
+        &self,
+        snapshot: &Snapshot,
+        scale: f32,
+        alerts: &AlertState,
+    ) -> Result<RenderedFrame, SkinError> {
         let width = ((self.skin.canvas.width as f32) * scale).round().max(1.0) as u32;
         let height = ((self.skin.canvas.height as f32) * scale).round().max(1.0) as u32;
         let mut pixmap = Pixmap::new(width, height)
@@ -217,9 +300,13 @@ impl Renderer {
             } else {
                 format!("{} {}", item.label, formatted)
             };
-            let color = match value::numeric_value(&item.id, snapshot) {
-                Some(value) => item.color_for(value),
-                None => item.color.clone(),
+            let color = if let Some(color) = alerts.color_for(&item.id) {
+                color.to_owned()
+            } else {
+                match value::numeric_value(&item.id, snapshot) {
+                    Some(value) => item.color_for(value),
+                    None => item.color.clone(),
+                }
             };
             draw_item_text(
                 context,
@@ -249,7 +336,7 @@ impl Renderer {
             width,
             height,
             argb: bgra,
-            cache_key: self.cache_key(snapshot, scale),
+            cache_key: self.cache_key(snapshot, scale, alerts),
             regions,
         })
     }
@@ -432,8 +519,23 @@ pub fn render_with_scheme(
     dpi: u32,
     scheme: ColorScheme,
 ) -> RenderedFrame {
-    let layout = layout(&config.overlay.items, snapshot, dpi);
-    let cache_key = cache_key(snapshot, config, dpi, scheme);
+    render_with_scheme_and_alerts(snapshot, config, dpi, scheme, &AlertState::default())
+}
+
+pub fn render_with_scheme_and_alerts(
+    snapshot: &Snapshot,
+    config: &Config,
+    dpi: u32,
+    scheme: ColorScheme,
+    alerts: &AlertState,
+) -> RenderedFrame {
+    let mut layout = layout(&config.overlay.items, snapshot, dpi);
+    for item in &mut layout.items {
+        if let Some(color) = alerts.color_for(&item.id) {
+            item.color = color.to_owned();
+        }
+    }
+    let cache_key = cache_key(snapshot, config, dpi, scheme, alerts);
     let mut pixmap = Pixmap::new(layout.width, layout.height).expect("non-zero overlay size");
     pixmap.fill(Color::TRANSPARENT);
 
@@ -536,7 +638,13 @@ pub fn render_with_scheme(
     }
 }
 
-fn cache_key(snapshot: &Snapshot, config: &Config, dpi: u32, scheme: ColorScheme) -> String {
+fn cache_key(
+    snapshot: &Snapshot,
+    config: &Config,
+    dpi: u32,
+    scheme: ColorScheme,
+    alerts: &AlertState,
+) -> String {
     let mut key = String::new();
     key.push_str(&format!(
         "{dpi}:{:.3}:{}:",
@@ -552,6 +660,7 @@ fn cache_key(snapshot: &Snapshot, config: &Config, dpi: u32, scheme: ColorScheme
         key.push_str(&value_text(&item.id, snapshot));
         key.push(',');
     }
+    key.push_str(&alerts.cache_key());
     key
 }
 

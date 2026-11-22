@@ -31,6 +31,7 @@ use crate::{
     spawn_snapshot_stream, FrameSource, SnapshotUpdate,
 };
 use trafficview_core::ColorScheme;
+use trafficview_render::AlertState;
 
 struct OutputState {
     output: wl_output::WlOutput,
@@ -62,6 +63,7 @@ struct State {
     snapshot_rx: Receiver<SnapshotUpdate>,
     latest: Option<Snapshot>,
     scheme: ColorScheme,
+    alerts: AlertState,
     position: [i32; 2],
 }
 
@@ -123,6 +125,7 @@ pub fn run(config: Config) -> Result<()> {
         snapshot_rx: spawn_snapshot_stream(),
         latest: None,
         scheme: ColorScheme::Dark,
+        alerts: AlertState::default(),
         position: config.overlay.position,
     };
 
@@ -142,6 +145,7 @@ pub fn run(config: Config) -> Result<()> {
         while let Ok(update) = state.snapshot_rx.try_recv() {
             state.latest = Some(update.snapshot);
             state.scheme = update.scheme;
+            state.alerts = update.alerts;
         }
         pump(&connection, &mut queue, &mut state)?;
         state.render_windows(&queue_handle)?;
@@ -278,7 +282,9 @@ impl State {
             if !can_render {
                 continue;
             }
-            let frame = self.source.render(&snapshot, scale, self.scheme)?;
+            let frame = self
+                .source
+                .render(&snapshot, scale, self.scheme, &self.alerts)?;
             let Some(window) = self.windows.get_mut(&id) else {
                 continue;
             };

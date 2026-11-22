@@ -369,18 +369,31 @@ M3 完成条件：数据库、告警、网络 fixture 测试全部通过，真�
   `dbus-monitor` 捕获到 `Alert` 信号，以及发往 Cinnamon 通知服务的
   `org.freedesktop.Notifications.Notify`，内容为
   `TrafficView 告警 / CPU 使用率 … 超过阈值 0.1（持续 1 秒）`。
+- overlay 的 X11/Wayland 前端现均已订阅既有 `Alert(sss)`，通过共享
+  `AlertState` 将对应 item 置为 info/warning/critical 色，恢复后回到原皮肤或
+  配置颜色；告警状态纳入缓存键，不改变 D-Bus 或渲染配置。新增
+  `alert_events_map_to_items_and_recovery_clears_only_that_alert`、
+  `skin_alert_changes_pixels_and_cache_then_recovery_restores_both`、
+  `fixed_layout_alert_changes_pixels_and_cache_then_recovery_restores_both`
+  三项测试；render/X11/Wayland 聚焦测试共 27 项通过。
+- Cinnamon X11 用临时 `cpu_pct > 80` 规则真实跨越阈值，`xwd` 捕获 CPU 项从
+  `#FFD43B` 变为 critical `#F44336`，恢复后回到 `#FFD43B`；总线/日志分别记录
+  `80.7 超过阈值` 与 `已恢复（当前 69.7）`。另一次 `cpu_pct > 70` 验证在同一
+  `dbus-monitor` 日志中捕获 critical `86.2 超过阈值` 和 info
+  `已恢复（当前 7.9）`。临时规则已删除并执行 `ReloadConfig`。
+- `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、
+  `dbus-run-session -- cargo test --workspace` 与 `cargo build --workspace --release`
+  全部通过；三个 systemd --user 单元使用新 release 产物干净重启，各仅一个实例。
 - 通过 `gsettings set org.gnome.desktop.interface color-scheme prefer-light`
   实测 portal 值 0→2→0，daemon 日志与 `ColorScheme` 属性同步 dark→light→dark，
   已恢复原设置。深浅色观感仍需人工确认。
-- 三个 systemd --user 单元用 release 产物干净重启，各仅一个实例。
 
 未完成/未验证（不得当作已验收）：
 
 - 真实热插拔与自动切卡：本机只有 `lo` 和 `enp0s3` 两个接口，且无
   `CAP_NET_ADMIN`/sudo，无法创建 dummy/veth 或切换默认路由。选择顺序由
   fixture 测试覆盖，真实 daemon 只验证了自动选中默认路由 `enp0s3`。
-- overlay 的告警 item 变色未实现；当前告警通过 D-Bus `Alert` 信号、托盘
-  tooltip 与桌面通知呈现。
 - 桌面通知仅验证“通知服务收到 Notify 且内容正确”，弹窗外观未人工确认。
-- Wayland/GNOME 的真实主题重绘未在对应会话验收（本机无该会话）。
+- Wayland/GNOME 的真实主题重绘与告警变色未在对应会话验收（本机无该会话）；
+  当前只有编译、离屏渲染及前端单元测试证据。
 

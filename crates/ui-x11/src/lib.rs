@@ -43,6 +43,8 @@ trait Daemon1 {
     ) -> zbus::Result<()>;
     #[zbus(signal)]
     fn config_changed(&self) -> zbus::Result<()>;
+    #[zbus(signal)]
+    fn alert(&self, level: String, code: String, message: String) -> zbus::Result<()>;
 }
 
 fn parse_scheme(value: &str) -> trafficview_core::ColorScheme {
@@ -119,6 +121,11 @@ async fn dbus_loop(config: Config, dpi: u32, frames: Sender<FrameUpdate>) -> Res
         .receive_config_changed()
         .await
         .context("cannot subscribe to the ConfigChanged signal")?;
+    let mut alert_stream = proxy
+        .receive_alert()
+        .await
+        .context("cannot subscribe to the Alert signal")?;
+    let mut alerts = trafficview_render::AlertState::default();
     let mut last_snapshot: Option<Snapshot> = None;
     loop {
         tokio::select! {
@@ -126,7 +133,7 @@ async fn dbus_loop(config: Config, dpi: u32, frames: Sender<FrameUpdate>) -> Res
                 let Some(signal) = signal else { break };
                 let args = signal.args()?;
                 let snapshot = trafficview_daemon::dbus::snapshot_from_dbus(&args.snapshot)?;
-                send_frame(&mut skin_renderer, &config, dpi, scheme, &snapshot, &frames)?;
+                send_frame(&mut skin_renderer, &config, dpi, scheme, &snapshot, &alerts, &frames)?;
                 last_snapshot = Some(snapshot);
             }
             changed = config_stream.next() => {
@@ -138,7 +145,16 @@ async fn dbus_loop(config: Config, dpi: u32, frames: Sender<FrameUpdate>) -> Res
                 }
                 // 主题切换时即使采样文本没变也要重绘。
                 if let Some(snapshot) = &last_snapshot {
-                    send_frame(&mut skin_renderer, &config, dpi, scheme, snapshot, &frames)?;
+                    send_frame(&mut skin_renderer, &config, dpi, scheme, snapshot, &alerts, &frames)?;
+                }
+            }
+            signal = alert_stream.next() => {
+                let Some(signal) = signal else { break };
+                let args = signal.args()?;
+                if alerts.apply_event(&args.level, &args.code, &args.message) {
+                    if let Some(snapshot) = &last_snapshot {
+                        send_frame(&mut skin_renderer, &config, dpi, scheme, snapshot, &alerts, &frames)?;
+                    }
                 }
             }
         }
@@ -152,16 +168,23 @@ fn send_frame(
     dpi: u32,
     scheme: trafficview_core::ColorScheme,
     snapshot: &Snapshot,
+    alerts: &trafficview_render::AlertState,
     frames: &Sender<FrameUpdate>,
 ) -> Result<()> {
     let frame = match skin_renderer {
         Some(renderer) => {
             renderer.set_color_scheme(scheme);
             renderer
-                .render(snapshot, dpi as f32 / trafficview_render::BASE_DPI as f32)
+                .render_with_alerts(
+                    snapshot,
+                    dpi as f32 / trafficview_render::BASE_DPI as f32,
+                    alerts,
+                )
                 .map_err(|error| anyhow::anyhow!(error))?
         }
-        None => trafficview_render::render_with_scheme(snapshot, config, dpi, scheme),
+        None => {
+            trafficview_render::render_with_scheme_and_alerts(snapshot, config, dpi, scheme, alerts)
+        }
     };
     frames
         .send(FrameUpdate {
