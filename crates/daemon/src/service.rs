@@ -41,6 +41,9 @@ use crate::{
 
 pub use crate::network::{default_route_interface, parse_default_route};
 
+/// 接口详情的兜底刷新周期；netlink 链路事件仍会立即触发刷新。
+const INTERFACE_REFRESH: Duration = Duration::from_secs(30);
+
 /// 采集器可用性；供设置界面区分“零值”与“不可用”。
 #[derive(Debug, Clone, Default)]
 pub struct CollectorStatus {
@@ -272,6 +275,10 @@ async fn scheduler(
     let supervisor = state.read().await.plugin_supervisor.clone();
     let process_traffic = state.read().await.process_traffic.clone();
     let mut sampler: Option<RuntimeSampler> = None;
+    // 接口详情（MAC/状态/carrier）不需要每秒重扫 sysfs：netlink 报告链路变化时立即刷新，
+    // 否则按固定周期兜底，避免把采样预算耗在成百上千次小文件读取上。
+    let mut interfaces: Vec<InterfaceInfo> = Vec::new();
+    let mut interfaces_at: Option<Instant> = None;
     loop {
         let (interval_ms, paused, configured_iface, include_cache, whitelist, blacklist, smoothing) = {
             let state = state.read().await;
@@ -324,11 +331,11 @@ async fn scheduler(
             active.smoothing = Smoother::new(smoothing);
             active.smoothed_iface = None;
         }
-        if active
+        let link_changed = active
             .watcher
             .as_ref()
-            .is_some_and(NetlinkWatcher::take_dirty)
-        {
+            .is_some_and(NetlinkWatcher::take_dirty);
+        if link_changed {
             debug!("netlink reported a link/route change; refreshing interfaces now");
         }
 
@@ -443,7 +450,12 @@ async fn scheduler(
             );
         }
 
-        let details = network::discover(&sys_root);
+        let stale = interfaces_at.is_none_or(|at| at.elapsed() >= INTERFACE_REFRESH);
+        if interfaces.is_empty() || link_changed || stale {
+            interfaces = network::discover(&sys_root);
+            interfaces_at = Some(Instant::now());
+        }
+        let details = interfaces.clone();
         refresh_interfaces(&state, &context, &details).await;
         record_history(&state, &details, &counters).await;
 

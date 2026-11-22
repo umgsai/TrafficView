@@ -151,6 +151,9 @@ impl HistoryStore {
         conn.busy_timeout(Duration::from_millis(5000))?;
         // WAL 对内存库返回 memory，不视为错误。
         let _: String = conn.query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))?;
+        // WAL + NORMAL：提交不再每次 fsync，掉电最多丢失最近若干采样，
+        // 不会损坏数据库。历史统计不值得为此每秒付一次磁盘同步。
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         migrate(&conn)?;
         Ok(Self {
