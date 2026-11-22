@@ -14,6 +14,7 @@ use tracing::{debug, info, warn};
 use trafficview_collectors::{
     cpu::{read_freq_mhz, read_loadavg, ProcCpu},
     disk::{read_filesystems, DiskSampler},
+    gpu::GpuSampler,
     hwmon::read_temps,
     mem::read_mem_with_mode,
     net::NetSampler,
@@ -188,6 +189,7 @@ struct RuntimeSampler {
     net: NetSampler,
     cpu: ProcCpu,
     disk: DiskSampler,
+    gpu: GpuSampler,
     uptime: UptimeState,
     last: Instant,
     smoothing: Smoother,
@@ -215,6 +217,7 @@ impl RuntimeSampler {
             net,
             cpu,
             disk,
+            gpu: GpuSampler::new("/sys/class/drm", proc_root),
             uptime: UptimeState::default(),
             last: Instant::now(),
             smoothing: Smoother::new(config.network_smoothing),
@@ -335,7 +338,16 @@ async fn scheduler(
         let uptime_s = active.uptime.read(&proc_root);
         let freq_mhz = read_freq_mhz(Path::new("/sys/devices/system/cpu"));
         let load = read_loadavg(&proc_root);
+        let (gpus, gpu_reason) = active.gpu.sample(Instant::now(), monotonic_ms());
+        let gpu = gpus.first().cloned();
         let collector_status = BTreeMap::from([
+            (
+                "gpu".to_string(),
+                CollectorStatus {
+                    available: gpu_reason.is_none(),
+                    reason: gpu_reason.unwrap_or_default(),
+                },
+            ),
             (
                 "disk".to_string(),
                 CollectorStatus::sampled(&disk, "no whole-disk counters"),
@@ -450,6 +462,8 @@ async fn scheduler(
         snapshot.filesystems = filesystems;
         snapshot.battery = battery;
         snapshot.uptime_s = uptime_s;
+        snapshot.gpu = gpu;
+        snapshot.gpus = gpus;
         let dict = snapshot_to_dbus(&snapshot);
         {
             let mut state = state.write().await;

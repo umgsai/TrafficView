@@ -60,7 +60,9 @@ net         a{sv}  iface s, rx_bps t, tx_bps t, rx_total t, tx_total t
 cpu         a{sv}  total_pct d, per_core ad, [freq_mhz u], [load ad]
 mem         a{sv}  used_pct d, total t, available t, swap_pct d
 disk        a{sv}  [可选] read_bps t, write_bps t
-gpu         a{sv}  [可选] name s, util_pct d, mem_used t, mem_total t
+gpu         a{sv}  [可选] 主 GPU 兼容别名：name s, util_pct d, mem_used t,
+                   mem_total t, [freq_mhz u], stale b, [observed_at_ms t]
+gpus        av     [可选] 全部 GPU，元素同 `gpu`
 temps       av     [{label s, celsius d}]
 filesystems av     [可选] [{mount s, total t, available t, used_pct d}]
 battery     a{sv}  [可选] percent d, status s
@@ -159,8 +161,12 @@ M4 只新增可选快照键与一个只读属性，未修改任何既有字段/�
 
 ### 新增快照键
 
-`filesystems`（`av`）、`battery`（`a{sv}`）、`uptime_s`（`t`），语义见上文；
-`cpu.freq_mhz`、`cpu.load`、`disk` 与 `temps` 在本阶段开始实际填充。
+`filesystems`（`av`）、`battery`（`a{sv}`）、`uptime_s`（`t`）、`gpus`（`av`），
+语义见上文；`cpu.freq_mhz`、`cpu.load`、`disk` 与 `temps` 在本阶段开始实际填充。
+
+GPU 后端优先 NVML，失败回退 `nvidia-smi`；AMD 用 `gpu_busy_percent`；Intel 用
+`fdinfo` 引擎差分，中间帧 `stale=true` 且保留原 `observed_at_ms`，超过 15 秒未更新
+才省略。`gpu` 始终是主 GPU 别名，多 GPU 详情只通过 `gpus` 提供。
 
 ### 新增 Properties
 

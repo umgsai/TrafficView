@@ -95,6 +95,15 @@ pub struct GpuSample {
     pub util_pct: f32,
     pub mem_used: u64,
     pub mem_total: u64,
+    /// Intel 等后端可报告频率；未知时省略。
+    #[serde(default)]
+    pub freq_mhz: Option<u32>,
+    /// 中间帧沿用上一读数时为 `true`，避免把旧值当成新采样。
+    #[serde(default)]
+    pub stale: bool,
+    /// 读数实际观测时间（`CLOCK_MONOTONIC` 毫秒）。
+    #[serde(default)]
+    pub observed_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -127,11 +136,18 @@ pub struct Snapshot {
     pub mem: MemSample,
     /// 可选键：M1 未采集时为 `None`（JSON 输出 `null`）。
     pub disk: Option<DiskSample>,
+    /// 主 GPU 兼容别名；多 GPU 时与 `gpus[0]` 相同。
     pub gpu: Option<GpuSample>,
+    /// 全部可用 GPU；未检测到后端时为空。
+    #[serde(default)]
+    pub gpus: Vec<GpuSample>,
     pub temps: Vec<TempSample>,
     /// 挂载点容量；未采集时为 `None`。
+    #[serde(default)]
     pub filesystems: Option<Vec<FilesystemSample>>,
+    #[serde(default)]
     pub battery: Option<BatterySample>,
+    #[serde(default)]
     pub uptime_s: Option<u64>,
     pub plugin: std::collections::BTreeMap<String, String>,
 }
@@ -146,6 +162,7 @@ impl Snapshot {
             mem,
             disk: None,
             gpu: None,
+            gpus: Vec::new(),
             temps: Vec::new(),
             filesystems: None,
             battery: None,
@@ -185,6 +202,7 @@ mod tests {
         );
         assert!(snapshot.disk.is_none());
         assert!(snapshot.gpu.is_none());
+        assert!(snapshot.gpus.is_empty());
         assert!(snapshot.temps.is_empty());
         assert!(snapshot.filesystems.is_none());
         assert!(snapshot.battery.is_none());

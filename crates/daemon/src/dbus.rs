@@ -297,6 +297,18 @@ pub fn snapshot_to_dbus(snapshot: &Snapshot) -> HashMap<String, OwnedValue> {
     if let Some(gpu) = snapshot.gpu.as_ref() {
         top.insert("gpu".into(), owned(gpu_value(gpu)));
     }
+    if !snapshot.gpus.is_empty() {
+        top.insert(
+            "gpus".into(),
+            owned(Value::from(
+                snapshot
+                    .gpus
+                    .iter()
+                    .map(gpu_value)
+                    .collect::<Vec<Value<'static>>>(),
+            )),
+        );
+    }
     top.insert(
         "temps".into(),
         owned(Value::from(
@@ -357,6 +369,13 @@ fn gpu_value(sample: &GpuSample) -> Value<'static> {
     map.insert("util_pct".into(), Value::from(sample.util_pct));
     map.insert("mem_used".into(), Value::from(sample.mem_used));
     map.insert("mem_total".into(), Value::from(sample.mem_total));
+    if let Some(freq_mhz) = sample.freq_mhz {
+        map.insert("freq_mhz".into(), Value::from(freq_mhz));
+    }
+    map.insert("stale".into(), Value::from(sample.stale));
+    if let Some(observed_at_ms) = sample.observed_at_ms {
+        map.insert("observed_at_ms".into(), Value::from(observed_at_ms));
+    }
     Value::from(map)
 }
 
@@ -484,14 +503,18 @@ pub fn snapshot_from_dbus(dict: &HashMap<String, OwnedValue>) -> anyhow::Result<
         .get("gpu")
         .map(|value| -> anyhow::Result<GpuSample> {
             let gpu: HashMap<String, OwnedValue> = value.try_clone()?.try_into()?;
-            Ok(GpuSample {
-                name: string(&gpu, "name")?,
-                util_pct: f64::try_from(required(&gpu, "util_pct")?.try_clone()?)? as f32,
-                mem_used: u64::try_from(required(&gpu, "mem_used")?)?,
-                mem_total: u64::try_from(required(&gpu, "mem_total")?)?,
-            })
+            gpu_from_dbus(&gpu)
         })
         .transpose()?;
+    let mut gpus = Vec::new();
+    if let Some(value) = dict.get("gpus") {
+        for entry in Vec::<OwnedValue>::try_from(value.try_clone()?)? {
+            let gpu: HashMap<String, OwnedValue> = entry.try_into()?;
+            gpus.push(gpu_from_dbus(&gpu)?);
+        }
+    }
+    // `gpu` 是主 GPU 兼容别名；只发送 `gpus` 的对端也能正确还原。
+    let gpu = gpu.or_else(|| gpus.first().cloned());
 
     let mut temps = Vec::new();
     if let Some(value) = dict.get("temps") {
@@ -550,6 +573,7 @@ pub fn snapshot_from_dbus(dict: &HashMap<String, OwnedValue>) -> anyhow::Result<
         mem,
         disk,
         gpu,
+        gpus,
         temps,
         filesystems,
         battery,
@@ -575,6 +599,31 @@ fn nested(
 
 fn string(dict: &HashMap<String, OwnedValue>, key: &str) -> anyhow::Result<String> {
     Ok(String::try_from(required(dict, key)?.try_clone()?)?)
+}
+
+fn gpu_from_dbus(dict: &HashMap<String, OwnedValue>) -> anyhow::Result<GpuSample> {
+    let freq_mhz = dict
+        .get("freq_mhz")
+        .map(|value| u32::try_from(value.try_clone()?))
+        .transpose()?;
+    let stale = dict
+        .get("stale")
+        .map(|value| bool::try_from(value.try_clone()?))
+        .transpose()?
+        .unwrap_or(false);
+    let observed_at_ms = dict
+        .get("observed_at_ms")
+        .map(|value| u64::try_from(value.try_clone()?))
+        .transpose()?;
+    Ok(GpuSample {
+        name: string(dict, "name")?,
+        util_pct: f64::try_from(required(dict, "util_pct")?.try_clone()?)? as f32,
+        mem_used: u64::try_from(required(dict, "mem_used")?.try_clone()?)?,
+        mem_total: u64::try_from(required(dict, "mem_total")?.try_clone()?)?,
+        freq_mhz,
+        stale,
+        observed_at_ms,
+    })
 }
 
 #[cfg(test)]
@@ -615,6 +664,25 @@ mod tests {
         for key in ["filesystems", "battery", "uptime_s"] {
             assert!(!dict.contains_key(key), "{key}");
         }
+    }
+
+    #[test]
+    fn gpu_alias_and_list_are_exported_when_present() {
+        let mut snapshot = snapshot();
+        let gpu = GpuSample {
+            name: "Intel GPU".into(),
+            util_pct: 12.0,
+            mem_used: 0,
+            mem_total: 0,
+            freq_mhz: Some(900),
+            stale: true,
+            observed_at_ms: Some(42),
+        };
+        snapshot.gpu = Some(gpu.clone());
+        snapshot.gpus = vec![gpu];
+        let dict = snapshot_to_dbus(&snapshot);
+        assert!(dict.contains_key("gpu"));
+        assert!(dict.contains_key("gpus"));
     }
 
     #[test]

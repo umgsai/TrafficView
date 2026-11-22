@@ -101,7 +101,7 @@ git commit -m "feat: collect disk hardware and power metrics"
 - Modify: `crates/core/src/lib.rs`
 - Modify: `crates/daemon/src/service.rs`
 
-- [ ] **Step 1: 写三类后端解析与不可用失败测试**
+- [x] **Step 1: 写三类后端解析与不可用失败测试**
 
 AMD fixture 覆盖 `gpu_busy_percent`、`mem_info_vram_used` 和文件不存在。NVIDIA fixture 覆盖 NVML 成功、驱动不匹配、NVML 不可加载，以及 `nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,temperature.gpu --format=csv=noheader,nounits` 的解析。Intel fixture 覆盖 `/proc/<pid>/fdinfo` 的 `drm-engine-*` 纳秒累计、重复 fd 去重、进程退出和首帧基线。
 
@@ -114,25 +114,25 @@ fn intel_utilization_uses_monotonic_engine_deltas() {
 }
 ```
 
-- [ ] **Step 2: 确认失败**
+- [x] **Step 2: 确认失败**
 
 Run: `cargo test -p trafficview-collectors gpu::`
 
 Expected: FAIL，GPU 后端未实现。
 
-- [ ] **Step 3: 实现后端优先级和节流**
+- [x] **Step 3: 实现后端优先级和节流**
 
 AMD 直接读 drm sysfs；NVIDIA 优先 NVML 动态库，加载失败才允许 nvidia-smi，子进程 2 秒超时且不得阻塞 Tokio worker；Intel 不拿 `gt_cur_freq_mhz` 冒充利用率，只将频率作为新增可选字段，利用率来自 engine fdinfo 差分。Intel 全进程扫描默认每 5 秒一次；中间帧保留最后读数但设置 `stale=true` 并携带原 `observed_at_ms`，既不能伪装成新采样，也不让显示每秒闪烁为 `--`，超过 15 秒未更新才返回 None。
 
 多 GPU 使用新增 `gpus: Vec<GpuSample>`，原 `gpu` 保持“主 GPU”兼容别名；主 GPU 按配置 stable PCI id 选择，未配置取第一块。权限不足、驱动不存在和 GPU 被移除均更新 `CollectorStatus`，不清空其他指标。
 
-- [ ] **Step 4: 验证真实硬件或记录不可测试边界**
+- [x] **Step 4: 验证真实硬件或记录不可测试边界**
 
 Run: `cargo test -p trafficview-collectors gpu:: && cargo test --workspace`
 
 Expected: fixture 全部 PASS。每种实际可用硬件分别对照 `intel_gpu_top`、`nvidia-smi` 或 `radeontop` 同窗口读数；不存在的硬件必须在验收记录标为未实测，不能声称通过。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/collectors/src/gpu.rs crates/collectors/src/lib.rs crates/core/src/lib.rs crates/daemon/src/service.rs
@@ -354,3 +354,17 @@ Task 1 已完成并以真实输出验证：
   未伪造零值。
 - Ruling：额外挂载点配置暂不做，先固定 `/`，留到 Task 5 的配置 API；
   代价是 Task 1 期间只能用默认挂载点，设置界面实现时补齐。
+
+Task 2 已完成并以真实输出验证：
+
+- 新增 7 项 GPU 测试先失败、后全部通过：AMD `gpu_busy_percent`/VRAM 与缺失计数、
+  `nvidia-smi` CSV 解析与驱动错误、Intel fdinfo 引擎差分/重复 fd 去重/
+  `stale` 与 15 秒过期、无受支持后端时的原因。
+- `dbus-run-session -- cargo test --workspace` 全部通过（collectors 34 项）；
+  `fmt`、`clippy -D warnings` 与 release 构建通过。
+- release daemon 重启后 `CollectorStatus.gpu` 返回
+  `available=false, reason="no supported GPU backend"`，`gpu`/`gpus` 键按约定省略。
+- 本机是 VirtualBox 虚拟显卡，无 AMD/NVIDIA/Intel GPU，无法对照
+  `radeontop`/`nvidia-smi`/`intel_gpu_top`；三类后端实机读数标记为未实测。
+- Ruling：主 GPU 暂取第一块，按配置 stable PCI id 的选择留到 Task 5 配置 API；
+  NVML 通过 libc `dlopen` 调用，失败回退 `nvidia-smi`（2 秒超时）。

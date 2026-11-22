@@ -160,10 +160,13 @@ async fn snapshot_properties_and_interval_validation_are_exposed() {
     if let Some(disk) = snapshot.get("disk") {
         assert_eq!(disk.value_signature().to_string(), "a{sv}");
     }
-    assert!(
-        !snapshot.contains_key("gpu"),
-        "gpu is not collected before the M4 GPU backend"
-    );
+    // M4 起 gpu/gpus 是可选键；本机无受支持后端时缺省，存在时必须签名正确。
+    if let Some(gpu) = snapshot.get("gpu") {
+        assert_eq!(gpu.value_signature().to_string(), "a{sv}");
+    }
+    if let Some(gpus) = snapshot.get("gpus") {
+        assert_eq!(gpus.value_signature().to_string(), "av");
+    }
     assert_eq!(
         snapshot["temps"].value_signature().to_string(),
         "av",
