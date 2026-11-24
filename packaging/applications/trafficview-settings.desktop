@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=TrafficView Settings
+Name[zh_CN]=TrafficView 设置
+Comment=Configure TrafficView display, network, alerts and plugins
+Comment[zh_CN]=配置 TrafficView 的显示、网络、告警与插件
+Exec=trafficview-settings
+Icon=trafficview
+Terminal=false
+Categories=System;Monitor;GTK;
+Keywords=traffic;monitor;network;bandwidth;
+StartupNotify=true

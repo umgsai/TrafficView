@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=TrafficView
+Comment=Start the tray icon and floating overlay
+Comment[zh_CN]=启动托盘图标与悬浮窗
+Exec=/usr/libexec/trafficview-session
+Icon=trafficview
+Terminal=false
+Categories=System;Monitor;GTK;
+Keywords=traffic;monitor;network;bandwidth;
+StartupNotify=false

@@ -5,7 +5,7 @@ members = ["."]
 
 [package]
 name = "trafficview-settings"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 description = "TrafficView 独立 GTK4/libadwaita 设置界面"
 
@@ -26,3 +26,7 @@ async-channel = "2"
 
 [dev-dependencies]
 tempfile = "3"
+
+# 独立 workspace 不继承根 `[profile.release]`，打包用的设置界面同样剥离符号。
+[profile.release]
+strip = true

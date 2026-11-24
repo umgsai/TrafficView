@@ -1,0 +1,8 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: TrafficView
+
+Files: *
+Copyright: 2026 TrafficView contributors
+License: UNLICENSED
+ 本仓库目前未声明开源许可证。此二进制包仅用于项目所有者的本地构建与测试；
+ 公开发布前必须由项目所有者确定许可证，并更新本文件与源码仓库。

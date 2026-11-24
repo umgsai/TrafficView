@@ -1,0 +1,13 @@
+trafficview (1.0.0-1) unstable; urgency=medium
+
+  * 首个发行版本。
+  * X11 悬浮窗：速率、CPU、内存等显示项，可拖动、悬停穿透、调透明度、置顶，
+    皮肤支持阈值变色。
+  * StatusNotifierItem 托盘：暂停/恢复、显隐悬浮窗、切换网卡、打开设置界面或
+    配置文件、退出。
+  * D-Bus 守护进程（com.trafficview.Daemon1）与 GTK4/libadwaita 设置界面。
+  * SQLite 分钟/日/月历史统计与阈值告警。
+  * 本包不含 eBPF/AF_PACKET 特权 helper；process_traffic.backend 为 ebpf/af_packet
+    时按不可用降级并给出原因。
+
+ -- TrafficView Maintainers <maintainers@trafficview.invalid>  Mon, 24 Nov 2026 12:00:00 +0800

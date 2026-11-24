@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=TrafficView
+Comment=Start the TrafficView daemon, tray icon and floating overlay
+Exec=/usr/libexec/trafficview-session
+Icon=trafficview
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
