@@ -18,6 +18,14 @@ Linux 桌面实时流量与系统负载监控。核心是一个只读 `/proc`、
 `/proc/diskstats`、`/proc/mounts`、`/proc/uptime`，以及 sysfs 中的电池、温度、GPU。
 不可用的采集器不会伪造零值，而是通过 `CollectorStatus` 返回 `available=false` 与原因。
 
+## 截图
+
+![TrafficView 悬浮窗与托盘](docs/images/overlay.png)
+
+浅色壁纸下悬浮窗会按背景自动加深文字，托盘使用固定应用图标：
+
+![托盘 tooltip](docs/images/tray-tooltip.png)
+
 ## 依赖
 
 - Linux（`/proc`、`/sys`、netlink、D-Bus 会话总线）
@@ -34,7 +42,7 @@ sudo apt install libgtk-4-dev libadwaita-1-dev   # Debian/Ubuntu
 
 ```bash
 ./packaging/build-deb.sh
-sudo dpkg -i dist/trafficview_1.0.0-1_amd64.deb
+sudo dpkg -i dist/trafficview_1.0.1-1_amd64.deb
 ```
 
 `build-deb.sh` 依次执行 fmt、clippy、测试（含独立的设置界面 workspace）与 release 构建，
@@ -42,7 +50,7 @@ sudo dpkg -i dist/trafficview_1.0.0-1_amd64.deb
 自启动条目、桌面入口、图标与文档，不含 eBPF/AF_PACKET 特权 helper。安装后 daemon、
 托盘与悬浮窗（仅 X11 会话）由 `/usr/libexec/trafficview-session` 在登录时启动；
 也可以 `systemctl --user enable --now trafficviewd` 把 daemon 交给 systemd 托管。
-发行说明见 [docs/releases/1.0.0.md](docs/releases/1.0.0.md)。
+发行说明见 [docs/releases/1.0.1.md](docs/releases/1.0.1.md)。
 
 只用源码运行：
 
@@ -194,7 +202,7 @@ $ gdbus call --session -d com.trafficview.Daemon1 \
 - 设置界面读写配置、断连横幅降级、自动重连
 - 告警触发并送达桌面通知
 - 无电池、无温度传感器、无 GPU 时按 `CollectorStatus` 降级，不出现伪造零值
-- Debian 主包（1.0.0）：Deepin 25 / amd64 上构建、`dpkg -i` 安装，启动菜单、会话自启动、
+- Debian 主包（1.0.1）：Deepin 25 / amd64 上构建、`dpkg -i` 安装，启动菜单、会话自启动、
   daemon 与设置界面均可用
 
 仍需换环境验证：KDE Plasma / GNOME 的 Wayland 会话、waybar 实际渲染、XFCE 下 24 小时运行、

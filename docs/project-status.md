@@ -6,7 +6,7 @@
 ## 一句话
 
 采集、D-Bus 守护进程、X11 悬浮窗、托盘、GTK4 设置界面与历史/告警均已实现并在
-Cinnamon/X11 实机跑通；版本已统一到 1.0.0，Debian 主包与发行说明已产出。剩余发布工程
+Cinnamon/X11 实机跑通；版本已统一到 1.0.1，Debian 主包与发行说明已产出。剩余发布工程
 是 daemon 稳态 CPU 0.400% 未达 0.3% 预算、rpm/AppImage，以及完整文档与提交。
 
 ## 里程碑状态
@@ -20,10 +20,10 @@ Cinnamon/X11 实机跑通；版本已统一到 1.0.0，Debian 主包与发行说
 | M4 高级指标 | 完成 | GPU/eBPF 无硬件实测；`process-ebpf` 为空占位 feature，`backend=ebpf` 恒降级 |
 | M5 发布工程 | 进行中 | Task 2 完成（Step 4 未达标）；Task 3 完成 deb（rpm/AppImage 未做）；Task 4 完成 README/发行说明，专页文档未写；Task 1 未开始 |
 
-## 1.0.0 发布物
+## 1.0.1 发布物
 
-- 版本：根 workspace 与 `frontends/settings` 均为 `1.0.0`
-- 产物：`dist/trafficview_1.0.0-1_amd64.deb`（6.2 MB）与 `dist/SHA256SUMS`
+- 版本：根 workspace 与 `frontends/settings` 均为 `1.0.1`
+- 产物：`dist/trafficview_1.0.1-1_amd64.deb`（6.2 MB）与 `dist/SHA256SUMS`
 - 打包方式：`packaging/build-deb.sh` + `dpkg-deb`，不依赖 debhelper/cargo-deb；
   依赖由 `dpkg-shlibdeps` 从暂存区二进制推导
 - 包内容：`trafficview` / `trafficviewd` / `trafficview-settings` 三个程序、systemd
@@ -31,7 +31,9 @@ Cinnamon/X11 实机跑通；版本已统一到 1.0.0，Debian 主包与发行说
   入口、hicolor 图标、README/dbus-v1/copyright/changelog
 - 不包含：eBPF/AF_PACKET 特权 helper、对应 system 单元与 `com.trafficview.Ebpf1.conf`；
   选到这些后端时由 daemon 按不可用降级
-- 发行说明：`docs/releases/1.0.0.md`
+- 1.0.1 相对 1.0.0：悬浮窗按背景自动调整文字对比度并加大字号/字重；修复托盘
+  `Network interface` 子菜单返回重复根菜单；托盘图标改为内嵌的静态应用图标
+- 发行说明：`docs/releases/1.0.1.md`（1.0.0 见 `docs/releases/1.0.0.md`）
 
 启动链：登录时 `/etc/xdg/autostart/trafficview-session.desktop` 调用
 `/usr/libexec/trafficview-session`，依次确保 daemon 在跑、等待 `com.trafficview.Daemon1`
@@ -85,6 +87,16 @@ cargo build --manifest-path frontends/settings/Cargo.toml   # 设置界面（独
 - 同时修掉两处既有 clippy 报错（`ui-wayland` 的 `FrameSource` 大枚举、`ui-x11` 可合并的
   `match` 分支）。
 
+## 最近验收（2026-11-24，1.0.1）
+
+- 悬浮窗可读性：浅色背景下文字对比度不足，改为按背景色与整体透明度自动调整文字亮度，
+  字号/字重/行高加大，并加 1px 内描边；`fmt`、`clippy -D warnings`、工作区测试通过。
+- 托盘 `Network interface` 子菜单：定位到 `GetLayout` 忽略 `parent_id`，修复后子菜单
+  返回 `Automatic` + 网卡单选项；补了布局单测。
+- 托盘图标改为内嵌 64px 应用图标的静态图标，移除随速率重绘与 `NewIcon` 信号。
+- `dist/trafficview_1.0.1-1_amd64.deb` 构建通过，`dpkg-deb -f` 校验版本与依赖正常；
+  截图收录在 `docs/images/` 并写入 README 与 1.0.1 发行说明。
+
 ## 最近验收（2026-11-22，Cinnamon/X11）
 
 - 桌面验收 15 项全过：托盘 6 项菜单、悬浮窗位置/透明度/穿透/皮肤热更新、设置窗口双向同步、断连降级与自动重连、开机自启文件写入。
@@ -127,16 +139,17 @@ a925b56 feat: 托盘与 CLI 增加设置窗口入口
 e7efef1 docs: 记录 M2 在 Cinnamon/X11 的桌面验收结果
 ```
 
-1.0.0 的版本号、打包资源、单实例保护与文档改动尚未提交。
+1.0.0 与 1.0.1 的版本号、打包资源、单实例保护、悬浮窗/托盘修复与文档、截图改动尚未提交。
 
 ## 从这里继续
 
-1. **重装并复核最新包**：`sudo dpkg -i dist/trafficview_1.0.0-1_amd64.deb`，确认启动菜单
+1. **重装并复核最新包**：`sudo dpkg -i dist/trafficview_1.0.1-1_amd64.deb`，确认启动菜单
    同时有 `TrafficView` 与 `TrafficView Settings`、重复点击不产生第二份托盘/悬浮窗、
-   注销重登后自启动正常；随后复跑完整质量门（新包已移除旧的 D-Bus 激活文件）。
+   托盘子菜单与静态图标正常、注销重登后自启动正常；随后复跑完整质量门。
 2. **决定 CPU 预算方向**（阻塞 M5 Step 4）：继续优化慢变采集器/无订阅者跳过序列化，
    或在真实非虚拟化硬件复测后接受差距。
-3. 提交 1.0.0 改动（版本、`packaging/`、单实例、README、状态文档与发行说明）。
+3. 提交 1.0.0/1.0.1 改动（版本、`packaging/`、单实例、悬浮窗与托盘修复、README、
+   `docs/images/`、状态文档与发行说明）。
 4. 继续 M5：Task 3 的 rpm/AppImage；Task 4 的 install/configuration/skins/plugins/
    desktop-support/permissions/release 专页；Task 1 的 TrafficMonitor 皮肤转换器。
 5. **LICENSE 仍未提供**：打包测试可做，公开发布必须先由项目所有者决定许可证。
