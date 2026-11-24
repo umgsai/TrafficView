@@ -9,6 +9,6 @@ serde = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 zbus = { version = "4", default-features = false, features = ["tokio"] }
 futures-util = "0.3"
+png = "0.17"
 trafficview-core = { path = "../core" }
-trafficview-render = { path = "../render" }
 trafficview-daemon = { path = "../daemon" }

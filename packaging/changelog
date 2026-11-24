@@ -1,3 +1,11 @@
+trafficview (1.0.1-1) unstable; urgency=medium
+
+  * 悬浮窗提高可读性：按背景自动调整文字对比度，字号与字重加大，增加内描边。
+  * 修复托盘的 Network interface 子菜单：按父节点返回布局，不再弹出重复的根菜单。
+  * 托盘图标改为静态应用图标，不再随速率变化重绘。
+
+ -- TrafficView Maintainers <maintainers@trafficview.invalid>  Mon, 24 Nov 2026 20:15:00 +0800
+
 trafficview (1.0.0-1) unstable; urgency=medium
 
   * 首个发行版本。

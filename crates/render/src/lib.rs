@@ -10,9 +10,9 @@ use std::{
 };
 
 use cosmic_text::{
-    Attrs, Buffer, Color as TextColor, Family, FontSystem, Metrics, Shaping, SwashCache,
+    Attrs, Buffer, Color as TextColor, Family, FontSystem, Metrics, Shaping, SwashCache, Weight,
 };
-use tiny_skia::{Color, Paint, PathBuilder, Pixmap, PixmapPaint, Transform};
+use tiny_skia::{Color, Paint, PathBuilder, Pixmap, PixmapPaint, Stroke, Transform};
 use trafficview_core::{
     config::{Config, DisplayItem},
     format::format_rate,
@@ -23,11 +23,13 @@ pub use skin::{Skin, SkinError};
 pub use value::{display_value, is_known_id, numeric_value};
 
 pub const BASE_DPI: u32 = 96;
-const ROW_HEIGHT: f32 = 20.0;
-const PADDING: f32 = 6.0;
+const ROW_HEIGHT: f32 = 22.0;
+const PADDING: f32 = 8.0;
 const GAP: f32 = 8.0;
-const BASE_WIDTH: f32 = 180.0;
-const FONT_SIZE: f32 = 12.0;
+const BASE_WIDTH: f32 = 200.0;
+const FONT_SIZE: f32 = 13.0;
+/// 文字与背景的最低对比度；低于该值时保持色相、调整亮度。
+const MIN_CONTRAST: f32 = 4.5;
 
 /// 前端从 D-Bus Alert 信号维护的活动告警；只覆盖显示颜色，不修改皮肤或配置。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -137,6 +139,9 @@ pub struct Renderer {
     skin: Skin,
     background: Option<Pixmap>,
     background_light: Option<Pixmap>,
+    /// 背景图的平均色，用于判断文字该压暗还是提亮。
+    background_rgb: Option<(u8, u8, u8)>,
+    background_light_rgb: Option<(u8, u8, u8)>,
     scheme: ColorScheme,
     last_key: Option<String>,
     last_frame: Option<RenderedFrame>,
@@ -153,10 +158,14 @@ impl Renderer {
                 "nine_patch requires a background PNG".into(),
             ));
         }
+        let background_rgb = background.as_ref().and_then(average_rgb);
+        let background_light_rgb = background_light.as_ref().and_then(average_rgb);
         Ok(Self {
             skin,
             background,
             background_light,
+            background_rgb,
+            background_light_rgb,
             scheme: ColorScheme::Dark,
             last_key: None,
             last_frame: None,
@@ -245,6 +254,23 @@ impl Renderer {
         }
     }
 
+    /// 文字所在的背景色：与绘制顺序一致，背景图优先于 `background_color`。
+    fn text_background(&self) -> (u8, u8, u8) {
+        let image_average = match self.scheme {
+            ColorScheme::Light => self.background_light_rgb.or(self.background_rgb),
+            ColorScheme::Dark => self.background_rgb,
+        };
+        if self.background_for().is_some() {
+            return image_average.unwrap_or_else(|| scheme_background(self.scheme));
+        }
+        self.skin
+            .canvas
+            .background_color
+            .as_deref()
+            .map(parse_color)
+            .unwrap_or_else(|| scheme_background(self.scheme))
+    }
+
     fn rasterize(
         &self,
         snapshot: &Snapshot,
@@ -276,6 +302,8 @@ impl Renderer {
         }
 
         let mut regions = Vec::with_capacity(self.skin.items.len());
+        let background_rgb = self.text_background();
+        let opacity = self.skin.canvas.opacity.clamp(0.0, 1.0);
         let mut guard = context().lock().expect("render context poisoned");
         let context = &mut *guard;
         for item in &self.skin.items {
@@ -309,12 +337,17 @@ impl Renderer {
                     None => item.color.clone(),
                 }
             };
+            let (r, g, b, a) = parse_color_rgba(&color);
+            let color = {
+                let (r, g, b) = readable_color((r, g, b), background_rgb, opacity, MIN_CONTRAST);
+                (r, g, b, a)
+            };
             draw_item_text(
                 context,
                 &mut pixmap,
                 item,
                 &text,
-                &color,
+                color,
                 scale,
                 (x, y, item_width, item_height),
                 &self.skin,
@@ -385,26 +418,28 @@ fn draw_item_text(
     pixmap: &mut Pixmap,
     item: &skin::SkinItem,
     text: &str,
-    color: &str,
+    color: (u8, u8, u8, u8),
     scale: f32,
     rect: (i32, i32, i32, i32),
     skin: &Skin,
 ) {
     let (x, y, width, height) = rect;
     let font_size = skin.font_size_for(item) * scale;
+    let line_height = font_size * 1.4;
     let mut buffer = Buffer::new(
         &mut context.font_system,
-        Metrics::new(font_size, font_size * 1.4),
+        Metrics::new(font_size, line_height),
     );
     buffer.set_size(
         &mut context.font_system,
         Some(width as f32),
         Some(height as f32),
     );
+    let attrs = Attrs::new().weight(Weight::MEDIUM);
     let attrs = if item.mono {
-        Attrs::new().family(Family::Monospace)
+        attrs.family(Family::Monospace)
     } else {
-        Attrs::new().family(Family::Name(&skin.font.family))
+        attrs.family(Family::Name(&skin.font.family))
     };
     buffer.set_text(&mut context.font_system, text, attrs, Shaping::Advanced);
     let line_width = buffer
@@ -416,10 +451,10 @@ fn draw_item_text(
         skin::Align::Right => (width as f32 - line_width).max(0.0),
         skin::Align::Center => ((width as f32 - line_width) / 2.0).max(0.0),
     };
-    let offset_y = ((height as f32 - font_size * 1.4) / 2.0).max(0.0);
+    let offset_y = ((height as f32 - line_height) / 2.0).max(0.0);
     let x0 = x as f32 + offset_x;
     let y0 = y as f32 + offset_y;
-    let (r, g, b, a) = parse_color_rgba(color);
+    let (r, g, b, a) = color;
     buffer.draw(
         &mut context.font_system,
         &mut context.swash_cache,
@@ -548,11 +583,9 @@ pub fn render_with_scheme_and_alerts(
     pixmap.fill(Color::TRANSPARENT);
 
     let opacity = config.overlay.opacity.clamp(0.0, 1.0);
+    let background = scheme_background(scheme);
     let mut paint = Paint::default();
-    match scheme {
-        ColorScheme::Dark => paint.set_color_rgba8(16, 18, 22, 255),
-        ColorScheme::Light => paint.set_color_rgba8(242, 244, 248, 255),
-    }
+    paint.set_color_rgba8(background.0, background.1, background.2, 255);
     paint.anti_alias = true;
     let mut builder = PathBuilder::new();
     let radius = 10.0 * layout.scale;
@@ -571,6 +604,7 @@ pub fn render_with_scheme_and_alerts(
             None,
         );
     }
+    draw_border(&mut pixmap, layout.width, layout.height, radius, scheme);
 
     let mut guard = context().lock().expect("render context poisoned");
     let context = &mut *guard;
@@ -578,11 +612,12 @@ pub fn render_with_scheme_and_alerts(
         if item.text.is_empty() {
             continue;
         }
-        let (r, g, b) = parse_color(&item.color);
+        let (r, g, b) = readable_color(parse_color(&item.color), background, opacity, MIN_CONTRAST);
         let font_size = FONT_SIZE * layout.scale;
+        let line_height = font_size * 1.4;
         let mut buffer = Buffer::new(
             &mut context.font_system,
-            Metrics::new(font_size, font_size * 1.4),
+            Metrics::new(font_size, line_height),
         );
         buffer.set_size(
             &mut context.font_system,
@@ -592,11 +627,11 @@ pub fn render_with_scheme_and_alerts(
         buffer.set_text(
             &mut context.font_system,
             &item.text,
-            Attrs::new(),
+            Attrs::new().weight(Weight::MEDIUM),
             Shaping::Advanced,
         );
         let x0 = item.x;
-        let y0 = item.y;
+        let y0 = item.y + ((item.height - line_height) / 2.0).max(0.0);
         buffer.draw(
             &mut context.font_system,
             &mut context.swash_cache,
@@ -673,22 +708,210 @@ fn cache_key(
 }
 
 fn rounded_rect(builder: &mut PathBuilder, width: f32, height: f32, radius: f32) {
+    rounded_rect_at(builder, 0.0, 0.0, width, height, radius);
+}
+
+fn rounded_rect_at(
+    builder: &mut PathBuilder,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    radius: f32,
+) {
     let r = radius.min(width / 2.0).min(height / 2.0);
-    builder.move_to(r, 0.0);
-    builder.line_to(width - r, 0.0);
-    builder.quad_to(width, 0.0, width, r);
-    builder.line_to(width, height - r);
-    builder.quad_to(width, height, width - r, height);
-    builder.line_to(r, height);
-    builder.quad_to(0.0, height, 0.0, height - r);
-    builder.line_to(0.0, r);
-    builder.quad_to(0.0, 0.0, r, 0.0);
+    builder.move_to(x + r, y);
+    builder.line_to(x + width - r, y);
+    builder.quad_to(x + width, y, x + width, y + r);
+    builder.line_to(x + width, y + height - r);
+    builder.quad_to(x + width, y + height, x + width - r, y + height);
+    builder.line_to(x + r, y + height);
+    builder.quad_to(x, y + height, x, y + height - r);
+    builder.line_to(x, y + r);
+    builder.quad_to(x, y, x + r, y);
     builder.close();
+}
+
+/// 内描边让悬浮窗在纯色壁纸上也有边界，不依赖外部阴影。
+fn draw_border(pixmap: &mut Pixmap, width: u32, height: u32, radius: f32, scheme: ColorScheme) {
+    let (r, g, b, a) = match scheme {
+        ColorScheme::Dark => (255, 255, 255, 26),
+        ColorScheme::Light => (0, 0, 0, 22),
+    };
+    let inset = 0.5;
+    let mut builder = PathBuilder::new();
+    rounded_rect_at(
+        &mut builder,
+        inset,
+        inset,
+        width as f32 - inset * 2.0,
+        height as f32 - inset * 2.0,
+        (radius - inset).max(0.0),
+    );
+    let Some(path) = builder.finish() else {
+        return;
+    };
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(r, g, b, a);
+    paint.anti_alias = true;
+    let stroke = Stroke {
+        width: 1.0,
+        ..Stroke::default()
+    };
+    pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+}
+
+fn scheme_background(scheme: ColorScheme) -> (u8, u8, u8) {
+    match scheme {
+        ColorScheme::Dark => (16, 18, 22),
+        ColorScheme::Light => (242, 244, 248),
+    }
+}
+
+/// 背景图按 alpha 加权的平均色；全透明时返回 `None`。
+fn average_rgb(pixmap: &Pixmap) -> Option<(u8, u8, u8)> {
+    // 像素是预乘 alpha：sum(channel * 255) / sum(alpha) 等价于非预乘均值。
+    let mut sums = [0u64; 3];
+    let mut weight = 0u64;
+    for pixel in pixmap.data().as_chunks::<4>().0 {
+        let alpha = u64::from(pixel[3]);
+        if alpha == 0 {
+            continue;
+        }
+        for (sum, channel) in sums.iter_mut().zip(pixel) {
+            *sum += u64::from(*channel) * 255;
+        }
+        weight += alpha;
+    }
+    if weight == 0 {
+        return None;
+    }
+    let channel = |sum: u64| ((sum + weight / 2) / weight).min(255) as u8;
+    Some((channel(sums[0]), channel(sums[1]), channel(sums[2])))
+}
+
+/// 保证文字在给定背景与透明度下达到最低对比度：保持色相与饱和度，只调整亮度。
+fn readable_color(
+    foreground: (u8, u8, u8),
+    background: (u8, u8, u8),
+    alpha: f32,
+    minimum: f32,
+) -> (u8, u8, u8) {
+    let alpha = alpha.clamp(0.0, 1.0);
+    if contrast_ratio(composite(foreground, background, alpha), background) >= minimum {
+        return foreground;
+    }
+    let (hue, saturation, lightness) = rgb_to_hsl(foreground);
+    let light_background = relative_luminance(background) > 0.5;
+    for step in 1..=100 {
+        let t = step as f32 / 100.0;
+        let candidate_lightness = if light_background {
+            lightness * (1.0 - t)
+        } else {
+            lightness + (1.0 - lightness) * t
+        };
+        let candidate = hsl_to_rgb(hue, saturation, candidate_lightness);
+        if contrast_ratio(composite(candidate, background, alpha), background) >= minimum {
+            return candidate;
+        }
+    }
+    if light_background {
+        (0, 0, 0)
+    } else {
+        (255, 255, 255)
+    }
+}
+
+fn composite(foreground: (u8, u8, u8), background: (u8, u8, u8), alpha: f32) -> (u8, u8, u8) {
+    let mix = |fg: u8, bg: u8| {
+        (f32::from(fg) * alpha + f32::from(bg) * (1.0 - alpha))
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    (
+        mix(foreground.0, background.0),
+        mix(foreground.1, background.1),
+        mix(foreground.2, background.2),
+    )
+}
+
+/// WCAG 相对亮度。
+fn relative_luminance((r, g, b): (u8, u8, u8)) -> f32 {
+    fn channel(value: u8) -> f32 {
+        let value = f32::from(value) / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+}
+
+fn contrast_ratio(a: (u8, u8, u8), b: (u8, u8, u8)) -> f32 {
+    let (a, b) = (relative_luminance(a), relative_luminance(b));
+    let (high, low) = if a > b { (a, b) } else { (b, a) };
+    (high + 0.05) / (low + 0.05)
+}
+
+fn rgb_to_hsl((r, g, b): (u8, u8, u8)) -> (f32, f32, f32) {
+    let r = f32::from(r) / 255.0;
+    let g = f32::from(g) / 255.0;
+    let b = f32::from(b) / 255.0;
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let lightness = (max + min) / 2.0;
+    let delta = max - min;
+    if delta <= f32::EPSILON {
+        return (0.0, 0.0, lightness);
+    }
+    let saturation = if lightness > 0.5 {
+        delta / (2.0 - max - min)
+    } else {
+        delta / (max + min)
+    };
+    let hue = if max == r {
+        ((g - b) / delta + if g < b { 6.0 } else { 0.0 }) / 6.0
+    } else if max == g {
+        ((b - r) / delta + 2.0) / 6.0
+    } else {
+        ((r - g) / delta + 4.0) / 6.0
+    };
+    (hue * 360.0, saturation, lightness)
+}
+
+fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> (u8, u8, u8) {
+    let to_byte = |value: f32| (value * 255.0).round().clamp(0.0, 255.0) as u8;
+    if saturation <= f32::EPSILON {
+        let value = to_byte(lightness);
+        return (value, value, value);
+    }
+    let q = if lightness < 0.5 {
+        lightness * (1.0 + saturation)
+    } else {
+        lightness + saturation - lightness * saturation
+    };
+    let p = 2.0 * lightness - q;
+    let hue = hue.rem_euclid(360.0) / 360.0;
+    let channel = |offset: f32| {
+        let t = (hue + offset).rem_euclid(1.0);
+        let value = if t < 1.0 / 6.0 {
+            p + (q - p) * 6.0 * t
+        } else if t < 0.5 {
+            q
+        } else if t < 2.0 / 3.0 {
+            p + (q - p) * (2.0 / 3.0 - t) * 6.0
+        } else {
+            p
+        };
+        to_byte(value)
+    };
+    (channel(1.0 / 3.0), channel(0.0), channel(-1.0 / 3.0))
 }
 
 fn parse_color(value: &str) -> (u8, u8, u8) {
     let hex = value.trim_start_matches('#');
-    if hex.len() == 6 {
+    if hex.len() >= 6 {
         let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(255);
         let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(255);
         let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(255);
@@ -809,6 +1032,27 @@ mod tests {
                 swap_pct: 0.0,
             },
         )
+    }
+
+    #[test]
+    fn light_background_text_is_darkened_to_meet_contrast() {
+        let background = (242, 244, 248);
+        let adapted = readable_color((255, 212, 59), background, 0.8, MIN_CONTRAST);
+        let visible = composite(adapted, background, 0.8);
+        assert!(
+            contrast_ratio(visible, background) >= MIN_CONTRAST,
+            "adapted color {adapted:?} is still low contrast"
+        );
+        assert!(relative_luminance(adapted) < relative_luminance((255, 212, 59)));
+    }
+
+    #[test]
+    fn dark_background_keeps_readable_palette_unchanged() {
+        let background = (16, 18, 22);
+        assert_eq!(
+            readable_color((127, 209, 255), background, 0.8, MIN_CONTRAST),
+            (127, 209, 255)
+        );
     }
 
     #[test]

@@ -3,14 +3,13 @@
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{Arc, RwLock},
+    sync::{Arc, OnceLock, RwLock},
     time::Duration,
 };
 
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use trafficview_core::{config::ConfigStore, format::format_bytes, format::format_rate, Snapshot};
-use trafficview_render::tray_icon;
 use zbus::{
     object_server::SignalContext,
     zvariant::{OwnedObjectPath, OwnedValue, Value},
@@ -72,7 +71,6 @@ struct Model {
     interfaces: Vec<String>,
     active_interface: String,
     config_path: Option<PathBuf>,
-    last_icon: Vec<u8>,
     online: bool,
     /// 最近一条仍 active 的告警 `(code, message)`。
     alert: Option<(String, String)>,
@@ -180,13 +178,6 @@ impl Model {
         (title, body)
     }
 
-    fn icon(&self) -> trafficview_render::TrayIcon {
-        match &self.snapshot {
-            Some(snapshot) => tray_icon(snapshot),
-            None => tray_icon(&empty_snapshot()),
-        }
-    }
-
     /// `Alert(level, code, message)` 的 `info` 级别视为恢复事件。
     fn apply_alert(&mut self, level: &str, code: &str, message: &str) {
         if level.eq_ignore_ascii_case("info") {
@@ -237,8 +228,8 @@ impl StatusNotifierItem {
 
     #[zbus(property)]
     fn icon_pixmap(&self) -> Vec<(i32, i32, Vec<u8>)> {
-        let icon = self.model.read().expect("tray model poisoned").icon();
-        vec![(icon.width, icon.height, icon.argb)]
+        let (width, height, argb) = static_icon();
+        vec![(*width, *height, argb.clone())]
     }
 
     #[zbus(property)]
@@ -299,6 +290,9 @@ impl DbusMenu {
     fn item_properties(id: i32, model: &Model) -> HashMap<String, Value<'static>> {
         let mut map: HashMap<String, Value<'static>> = HashMap::new();
         match id {
+            0 => {
+                map.insert("children-display".into(), Value::from("submenu"));
+            }
             ITEM_PAUSE => {
                 map.insert(
                     "label".into(),
@@ -369,24 +363,46 @@ impl DbusMenu {
         OwnedValue::try_from(Value::from((id, map, children))).expect("menu item is owned")
     }
 
-    async fn items(&self) -> Vec<OwnedValue> {
-        let model = self.model.read().expect("tray model poisoned");
-        let mut interface_items = vec![Self::item(ITEM_AUTO, &model, Vec::new())];
-        for index in 0..model.interfaces.len() {
-            interface_items.push(Self::item(
-                ITEM_IFACE_BASE + index as i32,
-                &model,
-                Vec::new(),
-            ));
+    fn child_ids(id: i32, model: &Model) -> Vec<i32> {
+        match id {
+            0 => vec![
+                ITEM_PAUSE,
+                ITEM_OVERLAY,
+                ITEM_INTERFACES,
+                ITEM_SETTINGS,
+                ITEM_CONFIG,
+                ITEM_QUIT,
+            ],
+            ITEM_INTERFACES => {
+                let mut ids = vec![ITEM_AUTO];
+                ids.extend((0..model.interfaces.len()).map(|index| ITEM_IFACE_BASE + index as i32));
+                ids
+            }
+            _ => Vec::new(),
         }
-        vec![
-            Self::item(ITEM_PAUSE, &model, Vec::new()),
-            Self::item(ITEM_OVERLAY, &model, Vec::new()),
-            Self::item(ITEM_INTERFACES, &model, interface_items),
-            Self::item(ITEM_SETTINGS, &model, Vec::new()),
-            Self::item(ITEM_CONFIG, &model, Vec::new()),
-            Self::item(ITEM_QUIT, &model, Vec::new()),
-        ]
+    }
+
+    /// DBusMenu 的 `recursion-depth`：0 不带子项，-1 递归到底，正数只展开对应层数。
+    fn children(id: i32, depth: i32, model: &Model) -> Vec<OwnedValue> {
+        if depth == 0 {
+            return Vec::new();
+        }
+        Self::child_ids(id, model)
+            .into_iter()
+            .map(|child| Self::item(child, model, Self::children(child, depth - 1, model)))
+            .collect()
+    }
+
+    fn layout(
+        id: i32,
+        depth: i32,
+        model: &Model,
+    ) -> (i32, HashMap<String, Value<'static>>, Vec<OwnedValue>) {
+        (
+            id,
+            Self::item_properties(id, model),
+            Self::children(id, depth, model),
+        )
     }
 }
 
@@ -394,17 +410,21 @@ impl DbusMenu {
 impl DbusMenu {
     async fn get_layout(
         &self,
-        _parent_id: i32,
-        _recursion_depth: i32,
+        parent_id: i32,
+        recursion_depth: i32,
         _property_names: Vec<String>,
     ) -> zbus::fdo::Result<(u32, (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>))> {
-        let mut properties = HashMap::new();
-        properties.insert(
-            "children-display".to_string(),
-            OwnedValue::try_from(Value::from("submenu"))
-                .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?,
-        );
-        Ok(((1u32), (0, properties, self.items().await)))
+        let model = self.model.read().expect("tray model poisoned");
+        let (id, properties, children) = Self::layout(parent_id, recursion_depth, &model);
+        let properties = properties
+            .into_iter()
+            .map(|(key, value)| {
+                OwnedValue::try_from(value)
+                    .map(|value| (key, value))
+                    .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))
+            })
+            .collect::<zbus::fdo::Result<HashMap<_, _>>>()?;
+        Ok((1u32, (id, properties, children)))
     }
 
     async fn get_group_properties(
@@ -719,17 +739,10 @@ async fn run_async() -> Result<()> {
             Some(signal) = samples.next() => {
                 let args = signal.args()?;
                 let snapshot = trafficview_daemon::dbus::snapshot_from_dbus(&args.snapshot)?;
-                let icon = tray_icon(&snapshot).argb;
-                let changed = {
+                {
                     let mut model = model.write().expect("tray model poisoned");
-                    let changed = model.last_icon != icon || !model.online;
                     model.snapshot = Some(snapshot);
-                    model.last_icon = icon;
                     model.online = true;
-                    changed
-                };
-                if changed {
-                    let _ = StatusNotifierItem::new_icon(&item_context).await;
                 }
                 // title 每秒都在变（速率、CPU、MEM），emit 让 dock 更新。
                 let _ = StatusNotifierItem::new_title(&item_context).await;
@@ -776,7 +789,6 @@ async fn run_async() -> Result<()> {
                         };
                         if was_offline {
                             refresh_interfaces(&proxy, &model).await;
-                            let _ = StatusNotifierItem::new_icon(&item_context).await;
                             let _ = StatusNotifierItem::new_title(&item_context).await;
                             let _ = StatusNotifierItem::new_tool_tip(&item_context).await;
                         }
@@ -803,7 +815,6 @@ async fn run_async() -> Result<()> {
                             model.snapshot = None;
                             model.paused = false;
                         }
-                        let _ = StatusNotifierItem::new_icon(&item_context).await;
                         let _ = StatusNotifierItem::new_title(&item_context).await;
                         let _ = StatusNotifierItem::new_tool_tip(&item_context).await;
                     }
@@ -849,29 +860,40 @@ async fn register_with_watcher(connection: &zbus::Connection, service: &str) {
     }
 }
 
-fn empty_snapshot() -> Snapshot {
-    Snapshot::new(
-        0,
-        trafficview_core::NetSample {
-            iface: String::new(),
-            rx_bps: 0,
-            tx_bps: 0,
-            rx_total: 0,
-            tx_total: 0,
-        },
-        trafficview_core::CpuSample {
-            total_pct: 0.0,
-            per_core: Vec::new(),
-            freq_mhz: None,
-            load: None,
-        },
-        trafficview_core::MemSample {
-            used_pct: 0.0,
-            total: 0,
-            available: 0,
-            swap_pct: 0.0,
-        },
-    )
+/// 包内的 64px 应用图标，托盘固定使用它，不再随速率重绘。
+const STATIC_ICON_PNG: &[u8] =
+    include_bytes!("../../../packaging/icons/hicolor/64x64/apps/trafficview.png");
+
+/// 解码一次并转成 StatusNotifierItem 要求的 ARGB32（网络字节序）。
+fn static_icon() -> &'static (i32, i32, Vec<u8>) {
+    static ICON: OnceLock<(i32, i32, Vec<u8>)> = OnceLock::new();
+    ICON.get_or_init(|| {
+        let mut decoder = png::Decoder::new(STATIC_ICON_PNG);
+        decoder.set_transformations(png::Transformations::normalize_to_color8());
+        let mut reader = decoder
+            .read_info()
+            .expect("bundled tray icon is a valid PNG");
+        let mut buffer = vec![0; reader.output_buffer_size()];
+        let info = reader
+            .next_frame(&mut buffer)
+            .expect("bundled tray icon has a frame");
+        let argb = match info.color_type {
+            png::ColorType::Rgba => buffer
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|pixel| [pixel[3], pixel[0], pixel[1], pixel[2]])
+                .collect(),
+            png::ColorType::Rgb => buffer
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .flat_map(|pixel| [255, pixel[0], pixel[1], pixel[2]])
+                .collect(),
+            other => panic!("unsupported tray icon color type: {other:?}"),
+        };
+        (info.width as i32, info.height as i32, argb)
+    })
 }
 
 #[cfg(test)]
@@ -891,6 +913,43 @@ mod tests {
         assert_eq!(auto["toggle-state"].try_clone().unwrap(), Value::from(0i32));
         assert_eq!(wlan["toggle-state"].try_clone().unwrap(), Value::from(1i32));
         assert_eq!(wlan["label"].try_clone().unwrap(), Value::from("wlan0"));
+    }
+
+    #[test]
+    fn static_tray_icon_is_a_decoded_app_icon() {
+        let (width, height, argb) = static_icon();
+        assert_eq!((*width, *height), (64, 64));
+        assert_eq!(argb.len(), 64 * 64 * 4);
+        assert!(argb.as_chunks::<4>().0.iter().any(|pixel| pixel[0] != 0));
+    }
+
+    #[test]
+    fn layout_returns_interface_submenu_for_its_own_parent_id() {
+        let model = Model {
+            interfaces: vec!["eth0".into(), "wlan0".into()],
+            ..Model::default()
+        };
+
+        let (root_id, root_props, root_children) = DbusMenu::layout(0, 1, &model);
+        assert_eq!(root_id, 0);
+        assert_eq!(
+            root_props["children-display"].try_clone().unwrap(),
+            Value::from("submenu")
+        );
+        assert_eq!(root_children.len(), 6);
+
+        let (id, props, children) = DbusMenu::layout(ITEM_INTERFACES, 1, &model);
+        assert_eq!(id, ITEM_INTERFACES);
+        assert_eq!(
+            props["label"].try_clone().unwrap(),
+            Value::from("Network interface")
+        );
+        assert_eq!(
+            DbusMenu::child_ids(ITEM_INTERFACES, &model),
+            vec![ITEM_AUTO, ITEM_IFACE_BASE, ITEM_IFACE_BASE + 1]
+        );
+        assert_eq!(children.len(), 3);
+        assert!(DbusMenu::layout(ITEM_QUIT, -1, &model).2.is_empty());
     }
 
     #[test]
