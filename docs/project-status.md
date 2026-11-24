@@ -1,11 +1,13 @@
 # TrafficView 项目状态
 
-> 最后更新：2026-11-22
-> 当前里程碑：M0–M4 已完成（M2/M3 有少量真机项未覆盖），M5 进行中（Task 2 已完成，但性能预算未达标）
+> 最后更新：2026-11-24
+> 当前里程碑：M0–M4 已完成（M2/M3 有少量真机项未覆盖），M5 进行中（Task 2 完成但性能预算未达标；Task 3 的 deb 部分完成，rpm/AppImage 未做）
 
 ## 一句话
 
-采集、D-Bus 守护进程、X11 悬浮窗、托盘、GTK4 设置界面与历史/告警均已实现并在 Cinnamon/X11 实机跑通；发布工程（基准、构建脚本）已就绪，卡在 daemon 稳态 CPU 0.400% 未达 0.3% 预算。
+采集、D-Bus 守护进程、X11 悬浮窗、托盘、GTK4 设置界面与历史/告警均已实现并在
+Cinnamon/X11 实机跑通；版本已统一到 1.0.0，Debian 主包与发行说明已产出。剩余发布工程
+是 daemon 稳态 CPU 0.400% 未达 0.3% 预算、rpm/AppImage，以及完整文档与提交。
 
 ## 里程碑状态
 
@@ -16,7 +18,26 @@
 | M2 显示与皮肤 | 代码完成 | Cinnamon/X11 15 项验收通过；KDE/GNOME/Wayland/waybar 未覆盖，完成条件未满足 |
 | M3 历史/告警/网络 | 基本完成 | 两处真机项未验：网卡热插拔、重启/休眠/主题切换 |
 | M4 高级指标 | 完成 | GPU/eBPF 无硬件实测；`process-ebpf` 为空占位 feature，`backend=ebpf` 恒降级 |
-| M5 发布工程 | 进行中 | Task 2 完成（Step 4 未达标未勾）；Task 1/3/4 未开始 |
+| M5 发布工程 | 进行中 | Task 2 完成（Step 4 未达标）；Task 3 完成 deb（rpm/AppImage 未做）；Task 4 完成 README/发行说明，专页文档未写；Task 1 未开始 |
+
+## 1.0.0 发布物
+
+- 版本：根 workspace 与 `frontends/settings` 均为 `1.0.0`
+- 产物：`dist/trafficview_1.0.0-1_amd64.deb`（6.2 MB）与 `dist/SHA256SUMS`
+- 打包方式：`packaging/build-deb.sh` + `dpkg-deb`，不依赖 debhelper/cargo-deb；
+  依赖由 `dpkg-shlibdeps` 从暂存区二进制推导
+- 包内容：`trafficview` / `trafficviewd` / `trafficview-settings` 三个程序、systemd
+  user 单元、`/usr/libexec/trafficview-session` 会话入口、系统级自启动条目、两个桌面
+  入口、hicolor 图标、README/dbus-v1/copyright/changelog
+- 不包含：eBPF/AF_PACKET 特权 helper、对应 system 单元与 `com.trafficview.Ebpf1.conf`；
+  选到这些后端时由 daemon 按不可用降级
+- 发行说明：`docs/releases/1.0.0.md`
+
+启动链：登录时 `/etc/xdg/autostart/trafficview-session.desktop` 调用
+`/usr/libexec/trafficview-session`，依次确保 daemon 在跑、等待 `com.trafficview.Daemon1`
+可用、X11 下拉起悬浮窗，最后前台运行托盘。托盘与悬浮窗分别持有
+`com.trafficview.Tray` / `com.trafficview.Overlay` 固定总线名做单实例保护。未使用 D-Bus
+激活文件，避免测试环境被系统级激活的 daemon 干扰。
 
 ## 代码结构
 
@@ -26,11 +47,12 @@
 | `crates/collectors` | `/proc`、sysfs、netlink、eBPF/AF_PACKET helper |
 | `crates/daemon` | D-Bus 服务 `com.trafficview.Daemon1`、历史 SQLite、告警、主题 |
 | `crates/cli` | `trafficview` 命令行（status/history/config/skin/overlay/tray/settings/autostart） |
-| `crates/tray` | StatusNotifierItem + DBusMenu |
-| `crates/ui-x11` | X11 悬浮窗（tiny-skia 软件渲染） |
+| `crates/tray` | StatusNotifierItem + DBusMenu（固定总线名单实例） |
+| `crates/ui-x11` | X11 悬浮窗（tiny-skia 软件渲染，固定总线名单实例） |
 | `crates/render` | 皮肤解析与离屏渲染 |
 | `frontends/settings` | 独立 `[workspace]` 的 GTK4/libadwaita 设置界面（根 `Cargo.toml` 用 `exclude` 排除，根构建不解析 GTK） |
-| `packaging/` | systemd 单元、D-Bus 策略、`build-release.sh` |
+| `packaging/` | systemd 单元、会话启动器、桌面/自启动条目、图标、`build-deb.sh`、`build-release.sh` |
+| `docs/` | D-Bus 契约、项目状态、发行说明、路线图 |
 
 ## 怎么跑
 
@@ -39,7 +61,10 @@
 cargo build --workspace --release                 # CLI + daemon
 cargo build --manifest-path frontends/settings/Cargo.toml   # 设置界面（独立 workspace）
 
-# 运行（需同一会话总线，DISPLAY=:0）
+# 打包（quality gate + release 构建 + deb）
+./packaging/build-deb.sh
+
+# 源码运行（需同一会话总线，DISPLAY=:0）
 ./target/release/trafficviewd &
 ./target/release/trafficview overlay &
 ./target/release/trafficview tray &
@@ -48,6 +73,17 @@ cargo build --manifest-path frontends/settings/Cargo.toml   # 设置界面（独
 
 设置界面查找顺序：与 `trafficview` 同目录 → `PATH`。本地调试需要软链：
 `ln -sf ../../frontends/settings/target/debug/trafficview-settings target/release/trafficview-settings`（`target/` 不入库，打包时两二进制同装 `/usr/bin`）。
+
+## 最近验收（2026-11-24，Deepin 25 / amd64）
+
+- 1.0.0 Debian 主包构建通过：`dpkg-deb -I/-c`、conffiles、md5sums、依赖推导、
+  `apt-get -s install` 模拟、临时 root 中 `dpkg --unpack` 均正常。
+- 实机 `dpkg -i` 安装：启动菜单出现设置入口，daemon 可拉起，设置窗口正常工作。
+- 打包过程中发现并修掉：启动菜单缺少主程序入口（补 `TrafficView` 桌面入口与会话启动器）、
+  重复启动托盘/悬浮窗会产生第二份（补固定总线名）、D-Bus 激活文件干扰 daemon 集成测试
+  （改为会话入口统一启动）。
+- 同时修掉两处既有 clippy 报错（`ui-wayland` 的 `FrameSource` 大枚举、`ui-x11` 可合并的
+  `match` 分支）。
 
 ## 最近验收（2026-11-22，Cinnamon/X11）
 
@@ -74,37 +110,45 @@ cargo build --manifest-path frontends/settings/Cargo.toml   # 设置界面（独
 
 ## 环境与磁盘
 
-- GTK4 4.14.5 / libadwaita 1.5.0（`libgtk-4-dev`、`libadwaita-1-dev` 已装）；Rust 1.100.0（`PATH` 需含 `/home/shang/.cargo/bin`）。
-- **磁盘极紧：根分区 24G，仅剩约 350MB。** `cargo clean --profile dev` 可释放约 3.5G；`cargo test` 会重建 debug 产物，跑前先确认空间。
-- 无 GPU（VirtualBox），无 eBPF 测试条件；`perf` 不可用（paranoid=4），profiling 用 strace 与 5s 采样对照。
+- 当前开发/打包环境：Deepin 25（crimson）/ amd64 / X11；GTK 4.18.6、libadwaita 1.5.0；
+  Rust 1.100.0。
+- 桌面验收环境另有 VirtualBox + Cinnamon/X11（无 GPU、单网卡）；`perf` 不可用
+  （paranoid=4），profiling 用 strace 与 5s 采样对照。
+- 磁盘：根分区 62G，已用 28G（约 47%），可正常执行 release 构建与测试。
 
-## 提交记录（近期，远端已同步到 `a925b56`）
+## 提交记录（近期）
 
 ```
-d22e84b test: 增加采集、渲染与存储基准及发布构建脚本   ← 未推送
+725aeb1 feat(overlay): 悬浮窗改 2×2 网格布局、自动贴靠屏幕、修复圆角
+46cca14 docs: 增加项目 README 与运行说明
+75bdff4 docs: 更新项目状态与明日续做入口
+d22e84b test: 增加采集、渲染与存储基准及发布构建脚本
 a925b56 feat: 托盘与 CLI 增加设置窗口入口
 e7efef1 docs: 记录 M2 在 Cinnamon/X11 的桌面验收结果
-1bc3b77 fix: 修复设置窗口保存失败与断连无感知
-c47230d fix: daemon 退出后关闭残留的悬浮窗
-97ac6df fix: 修复托盘菜单点击无效与悬浮窗不响应配置
 ```
 
-## 明天从这里继续
+1.0.0 的版本号、打包资源、单实例保护与文档改动尚未提交。
 
-1. **先决定 CPU 预算方向**（唯一阻塞 M5 Step 4 的事）：
-   - 继续优化：慢变采集器（温度/GPU/文件系统/电池）降为 5s、无订阅者时跳过 `Sample` 序列化；
-   - 或接受差距，在真实非虚拟化硬件复测后确认。
-2. 若预算问题解决，勾选 M5 Task 2 Step 4 并 `git push origin master`（当前 1 个未推送提交）。
-3. 进入 **M5 Task 3**（deb/rpm/AppImage 打包，见 `docs/superpowers/plans/2026-11-20-m5-release.md`）；之后 Task 4（文档 + CHANGELOG + 最终验收）、Task 1（TrafficMonitor 皮肤转换器）。
-4. **LICENSE 仍未提供**：打包测试可做，公开发布必须先由项目所有者决定许可证。
+## 从这里继续
 
-## 遗留清单（不阻塞 M5）
+1. **重装并复核最新包**：`sudo dpkg -i dist/trafficview_1.0.0-1_amd64.deb`，确认启动菜单
+   同时有 `TrafficView` 与 `TrafficView Settings`、重复点击不产生第二份托盘/悬浮窗、
+   注销重登后自启动正常；随后复跑完整质量门（新包已移除旧的 D-Bus 激活文件）。
+2. **决定 CPU 预算方向**（阻塞 M5 Step 4）：继续优化慢变采集器/无订阅者跳过序列化，
+   或在真实非虚拟化硬件复测后接受差距。
+3. 提交 1.0.0 改动（版本、`packaging/`、单实例、README、状态文档与发行说明）。
+4. 继续 M5：Task 3 的 rpm/AppImage；Task 4 的 install/configuration/skins/plugins/
+   desktop-support/permissions/release 专页；Task 1 的 TrafficMonitor 皮肤转换器。
+5. **LICENSE 仍未提供**：打包测试可做，公开发布必须先由项目所有者决定许可证。
+
+## 遗留清单（不阻塞发布）
 
 - eBPF 内核侧（M4 Task 4 Step 3）：`process-ebpf` 为空 feature，`backend=ebpf` 恒返回不可用（已按规范降级并给原因）。
 - M3 两处真机验收：网卡热插拔、重启/休眠/主题切换。
 - M1/M2 计划复选框未勾：需要 XFCE/X11、KDE/Wayland、GNOME/Wayland、waybar 覆盖。
 - M0–M2 三份计划的复选框仍为 0%，与代码实际交付不符，属记账欠账。
 - 悬浮窗在 VirtualBox 软件渲染下会留旧像素残影（X 未重绘，非程序缺陷）。
+- 包内未带 eBPF/AF_PACKET helper 与对应 system 单元；`backend=ebpf|af_packet` 恒降级。
 
 ## 时序语义（长期约束）
 

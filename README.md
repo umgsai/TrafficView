@@ -28,9 +28,23 @@ Linux 桌面实时流量与系统负载监控。核心是一个只读 `/proc`、
 sudo apt install libgtk-4-dev libadwaita-1-dev   # Debian/Ubuntu
 ```
 
-## 从源码构建
+## 构建与打包
 
-目前没有发行包（deb/rpm/AppImage 尚未实现），只能从源码构建。
+当前提供 Debian 包；rpm/AppImage 尚未实现。
+
+```bash
+./packaging/build-deb.sh
+sudo dpkg -i dist/trafficview_1.0.0-1_amd64.deb
+```
+
+`build-deb.sh` 依次执行 fmt、clippy、测试（含独立的设置界面 workspace）与 release 构建，
+再组装单个主包并写出 `dist/SHA256SUMS`。包内包含三个程序、systemd user 单元、会话
+自启动条目、桌面入口、图标与文档，不含 eBPF/AF_PACKET 特权 helper。安装后 daemon、
+托盘与悬浮窗（仅 X11 会话）由 `/usr/libexec/trafficview-session` 在登录时启动；
+也可以 `systemctl --user enable --now trafficviewd` 把 daemon 交给 systemd 托管。
+发行说明见 [docs/releases/1.0.0.md](docs/releases/1.0.0.md)。
+
+只用源码运行：
 
 ```bash
 cargo build --workspace --release
@@ -41,10 +55,10 @@ cargo build --manifest-path frontends/settings/Cargo.toml
 
 - `target/release/trafficview`：命令行与各前端入口
 - `target/release/trafficviewd`：守护进程
-- `frontends/settings/target/debug/trafficview-settings`：设置界面（独立 workspace，
+- `frontends/settings/target/release/trafficview-settings`：设置界面（独立 workspace，
   不参与根目录的 release 构建）
 
-发布构建脚本依次执行 fmt、clippy、测试、release 构建并生成校验和：
+发布构建脚本（仅二进制与校验和，不生成 deb）：
 
 ```bash
 ./packaging/build-release.sh
@@ -145,6 +159,10 @@ $ trafficview autostart status
 enabled /home/shang/.config/autostart/trafficview.desktop
 ```
 
+安装 deb 时还会写入系统级条目 `/etc/xdg/autostart/trafficview-session.desktop`，登录后由
+`/usr/libexec/trafficview-session` 拉起 daemon、托盘与悬浮窗（X11）。托盘和悬浮窗使用固定
+总线名做单实例保护，与用户级条目重复启动时不会出现第二份。
+
 ## D-Bus 接口
 
 - 总线名：`com.trafficview.Daemon1`
@@ -168,7 +186,7 @@ $ gdbus call --session -d com.trafficview.Daemon1 \
 
 ## 已验证的范围
 
-以下在 VirtualBox + Cinnamon/X11、单网卡 `enp0s3`、无 GPU 的环境里实机验证过：
+以下在 VirtualBox + Cinnamon/X11（单网卡 `enp0s3`、无 GPU）与 Deepin 25 / amd64 环境里实机验证过：
 
 - 守护进程采样、D-Bus 调用、历史写入与跨重启累计
 - 悬浮窗显示/隐藏、位置、透明度、穿透、皮肤热更新与无效皮肤降级
@@ -176,9 +194,11 @@ $ gdbus call --session -d com.trafficview.Daemon1 \
 - 设置界面读写配置、断连横幅降级、自动重连
 - 告警触发并送达桌面通知
 - 无电池、无温度传感器、无 GPU 时按 `CollectorStatus` 降级，不出现伪造零值
+- Debian 主包（1.0.0）：Deepin 25 / amd64 上构建、`dpkg -i` 安装，启动菜单、会话自启动、
+  daemon 与设置界面均可用
 
 仍需换环境验证：KDE Plasma / GNOME 的 Wayland 会话、waybar 实际渲染、XFCE 下 24 小时运行、
-GPU 读数、eBPF 后端、网卡热插拔、休眠唤醒后的统计连续性、deb/rpm/AppImage 的安装。
+GPU 读数、eBPF 后端、网卡热插拔、休眠唤醒后的统计连续性、rpm/AppImage 的打包。
 
 性能现状与后续计划见 [docs/project-status.md](docs/project-status.md)。
 
@@ -193,6 +213,6 @@ crates/tray         StatusNotifierItem 托盘
 crates/ui-x11       X11 悬浮窗
 crates/render       皮肤解析与离屏渲染
 frontends/settings  GTK4 设置界面（独立 workspace）
-packaging           systemd 单元、D-Bus 策略、发布构建脚本
-docs                路线图、D-Bus 契约、项目状态
+packaging           systemd 单元、会话启动器、桌面/自启动条目、图标、deb 与发布构建脚本
+docs                路线图、D-Bus 契约、项目状态、发行说明
 ```
