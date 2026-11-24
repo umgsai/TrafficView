@@ -140,8 +140,10 @@ impl NetSampler {
                     .into_iter()
                     .map(|(name, _, _)| name)
                     .collect();
-                let missing: Vec<_> =
-                    proc_names.iter().filter(|n| !nl_names.contains(n.as_str())).collect();
+                let missing: Vec<_> = proc_names
+                    .iter()
+                    .filter(|n| !nl_names.contains(n.as_str()))
+                    .collect();
                 if !missing.is_empty() {
                     self.last_source = "procfs";
                     return self.sample_all_from_proc(elapsed);

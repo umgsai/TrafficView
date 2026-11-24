@@ -14,8 +14,8 @@ use tracing::warn;
 use trafficview_core::{
     config::{
         AlertRule, AlertsConfig, Config, ConfigStore, DisplayItem, HistoryConfig, NetworkSmoothing,
-        OverlayConfig, PluginsConfig, ProcessTrafficBackend, ProcessTrafficConfig, RateUnit,
-        ThemeMode, SAMPLE_INTERVAL_MAX_MS, SAMPLE_INTERVAL_MIN_MS,
+        OverlayConfig, PluginsConfig, PositionPreset, ProcessTrafficBackend, ProcessTrafficConfig,
+        RateUnit, ThemeMode, SAMPLE_INTERVAL_MAX_MS, SAMPLE_INTERVAL_MIN_MS,
     },
     BatterySample, CpuSample, DiskSample, FilesystemSample, GpuSample, InterfaceInfo, MemSample,
     NetSample, ProcessTrafficSample, Snapshot, TempSample, TrafficSummary,
@@ -881,6 +881,10 @@ fn overlay_value(config: &OverlayConfig) -> Value<'static> {
     let mut map: HashMap<String, Value<'static>> = HashMap::new();
     map.insert("visible".into(), Value::from(config.visible));
     map.insert("position".into(), Value::from(config.position.to_vec()));
+    map.insert(
+        "position_preset".into(),
+        Value::from(preset_name(config.position_preset)),
+    );
     map.insert("opacity".into(), Value::from(f64::from(config.opacity)));
     map.insert("click_through".into(), Value::from(config.click_through));
     map.insert("always_on_top".into(), Value::from(config.always_on_top));
@@ -981,6 +985,29 @@ fn parse_units(value: &str) -> Result<RateUnit, String> {
         "bytes" => Ok(RateUnit::Bytes),
         "bits" => Ok(RateUnit::Bits),
         other => Err(format!("overlay.units '{other}' must be bytes or bits")),
+    }
+}
+
+fn preset_name(value: PositionPreset) -> &'static str {
+    match value {
+        PositionPreset::BottomRight => "bottom_right",
+        PositionPreset::BottomLeft => "bottom_left",
+        PositionPreset::TopRight => "top_right",
+        PositionPreset::TopLeft => "top_left",
+        PositionPreset::Manual => "manual",
+    }
+}
+
+fn parse_preset(value: &str) -> Result<PositionPreset, String> {
+    match value {
+        "bottom_right" => Ok(PositionPreset::BottomRight),
+        "bottom_left" => Ok(PositionPreset::BottomLeft),
+        "top_right" => Ok(PositionPreset::TopRight),
+        "top_left" => Ok(PositionPreset::TopLeft),
+        "manual" => Ok(PositionPreset::Manual),
+        other => Err(format!(
+            "overlay.position_preset '{other}' must be bottom_right, bottom_left, top_right, top_left or manual"
+        )),
     }
 }
 
@@ -1126,6 +1153,10 @@ fn apply_overlay(
         match key.as_str() {
             "visible" => config.visible = as_bool(cloned(value, &path)?, &path)?,
             "position" => config.position = as_position(cloned(value, &path)?, &path)?,
+            "position_preset" => {
+                let text = as_string(cloned(value, &path)?, &path)?;
+                config.position_preset = parse_preset(&text)?;
+            }
             "opacity" => config.opacity = as_f64(cloned(value, &path)?, &path)? as f32,
             "click_through" => config.click_through = as_bool(cloned(value, &path)?, &path)?,
             "always_on_top" => config.always_on_top = as_bool(cloned(value, &path)?, &path)?,

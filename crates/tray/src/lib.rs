@@ -9,9 +9,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
-use trafficview_core::{
-    config::ConfigStore, format::format_bytes, format::format_rate, Snapshot,
-};
+use trafficview_core::{config::ConfigStore, format::format_bytes, format::format_rate, Snapshot};
 use trafficview_render::tray_icon;
 use zbus::{
     object_server::SignalContext,
@@ -27,7 +25,6 @@ const WATCHER_PATH: &str = "/StatusNotifierWatcher";
 
 const ITEM_PAUSE: i32 = 1;
 const ITEM_OVERLAY: i32 = 2;
-const ITEM_TASKBAR: i32 = 4;
 const ITEM_QUIT: i32 = 3;
 const ITEM_INTERFACES: i32 = 10;
 const ITEM_CONFIG: i32 = 20;
@@ -113,10 +110,7 @@ impl Model {
 
     fn tool_tip(&self) -> (String, String) {
         let (title, mut body) = match (&self.snapshot, self.online, self.paused) {
-            (_, false, _) => (
-                "TrafficView".into(),
-                "daemon offline; retrying…".into(),
-            ),
+            (_, false, _) => ("TrafficView".into(), "daemon offline; retrying…".into()),
             (_, true, true) => ("TrafficView (paused)".into(), String::new()),
             (Some(s), true, false) => {
                 let title = format!(
@@ -254,12 +248,7 @@ impl StatusNotifierItem {
         // ToolTip 四元组 = (icon_name, icon_data, subtitle, body)
         // Deepin Dock 只把 subtitle (字段 [2]) 当 tooltip 主文本渲染，
         // icon_data 传空数组（它自己有 tray icon）。
-        (
-            "trafficview".into(),
-            Vec::new(),
-            title,
-            body,
-        )
+        ("trafficview".into(), Vec::new(), title, body)
     }
 
     #[zbus(property)]
@@ -324,14 +313,6 @@ impl DbusMenu {
                     } else {
                         "Show overlay"
                     }),
-                );
-            }
-            ITEM_TASKBAR => {
-                map.insert("label".into(), Value::from("Show metrics in tooltip"));
-                map.insert("type".into(), Value::from("checkmark"));
-                map.insert(
-                    "toggle-state".into(),
-                    Value::from(if model.show_in_taskbar { 1i32 } else { 0i32 }),
                 );
             }
             ITEM_QUIT => {
@@ -401,7 +382,6 @@ impl DbusMenu {
         vec![
             Self::item(ITEM_PAUSE, &model, Vec::new()),
             Self::item(ITEM_OVERLAY, &model, Vec::new()),
-            Self::item(ITEM_TASKBAR, &model, Vec::new()),
             Self::item(ITEM_INTERFACES, &model, interface_items),
             Self::item(ITEM_SETTINGS, &model, Vec::new()),
             Self::item(ITEM_CONFIG, &model, Vec::new()),
@@ -438,7 +418,6 @@ impl DbusMenu {
                 0,
                 ITEM_PAUSE,
                 ITEM_OVERLAY,
-                ITEM_TASKBAR,
                 ITEM_INTERFACES,
                 ITEM_SETTINGS,
                 ITEM_CONFIG,
@@ -534,15 +513,6 @@ impl DbusMenu {
                 }
                 .to_string(),
             )),
-            ITEM_TASKBAR => Some((
-                "SetOverlayShowInTaskbar",
-                {
-                    let mut model = self.model.write().expect("tray model poisoned");
-                    model.show_in_taskbar = !model.show_in_taskbar;
-                    model.show_in_taskbar
-                }
-                .to_string(),
-            )),
             ITEM_AUTO => Some(("SetActiveInterface", String::new())),
             id if id >= ITEM_IFACE_BASE => {
                 let name = {
@@ -576,27 +546,9 @@ impl DbusMenu {
             "SetOverlayVisible" => {
                 call_daemon(&self.daemon, "SetOverlayVisible", &(value == "true",)).await
             }
-            "SetOverlayShowInTaskbar" => {
-                call_daemon(
-                    &self.daemon,
-                    "SetOverlayShowInTaskbar",
-                    &(value == "true",),
-                )
-                .await
-            }
             _ => call_daemon(&self.daemon, "SetActiveInterface", &(value.as_str(),)).await,
         };
         result.map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
-
-        // ITEM_TASKBAR 切到 true 时发一条通知
-        if method == "SetOverlayShowInTaskbar" && value == "true" {
-            let _ = notify_via_dbus(
-                &self.daemon,
-                "TrafficView",
-                "Show metrics in tooltip",
-                "悬停托盘图标即可查看实时网速/CPU/内存指标，移走自动消失",
-            ).await;
-        }
 
         Ok(true)
     }
@@ -676,35 +628,6 @@ where
     Ok(())
 }
 
-/// 通过 freedesktop Notifications 发送一条桌面通知。
-async fn notify_via_dbus(
-    connection: &zbus::Connection,
-    app_name: &str,
-    summary: &str,
-    body: &str,
-) -> zbus::Result<()> {
-    use std::collections::HashMap;
-    connection
-        .call_method(
-            Some("org.freedesktop.Notifications"),
-            "/org/freedesktop/Notifications",
-            Some("org.freedesktop.Notifications"),
-            "Notify",
-            &(
-                app_name,
-                0u32,
-                "utilities-system-monitor",
-                summary,
-                body,
-                Vec::<String>::new(),
-                HashMap::<String, String>::new(),
-                1500i32,
-            ),
-        )
-        .await?;
-    Ok(())
-}
-
 /// 设置窗口的位置：与托盘同目录（打包安装后的 `/usr/bin`），否则交给 PATH。
 fn settings_binary() -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
@@ -730,6 +653,15 @@ async fn run_async() -> Result<()> {
     let connection = zbus::Connection::session()
         .await
         .context("cannot connect to the session bus")?;
+    // 固定名做单实例：从启动菜单和会话自启动重复拉起时，第二个实例直接退出。
+    match connection.request_name("com.trafficview.Tray").await {
+        Ok(()) => {}
+        Err(zbus::Error::NameTaken) => {
+            eprintln!("tray: another instance is already running");
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    }
     let store = ConfigStore::xdg().ok();
     let overlay_visible = store
         .as_ref()

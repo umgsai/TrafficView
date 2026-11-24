@@ -34,6 +34,10 @@ trait Daemon1 {
     fn get_snapshot(
         &self,
     ) -> zbus::Result<std::collections::HashMap<String, zbus::zvariant::OwnedValue>>;
+    fn update_config(
+        &self,
+        updates: std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+    ) -> zbus::Result<()>;
     #[zbus(property)]
     fn color_scheme(&self) -> zbus::Result<String>;
     #[zbus(signal)]
@@ -109,16 +113,18 @@ pub fn run(config: Config) -> Result<()> {
         std::env::var("DISPLAY").unwrap_or_default()
     );
     let (frame_tx, frame_rx) = mpsc::channel::<FrameUpdate>();
+    // 拖动结束后由 X11 线程把坐标交给 D-Bus 线程，经 UpdateConfig 全链路同步并持久化。
+    let (move_tx, move_rx) = tokio::sync::mpsc::unbounded_channel::<[i32; 2]>();
     let store = ConfigStore::xdg().ok();
     let initial = config.clone();
     let x11_store = store.clone();
-    let x11_thread = thread::spawn(move || x11_loop(initial, frame_rx, x11_store));
+    let x11_thread = thread::spawn(move || x11_loop(initial, frame_rx, x11_store, move_tx));
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("cannot start the overlay runtime")?;
-    let result = runtime.block_on(dbus_loop(config, dpi, frame_tx, store));
+    let result = runtime.block_on(dbus_loop(config, dpi, frame_tx, store, move_rx));
     if let Err(error) = &result {
         eprintln!("overlay: {error:#}");
     }
@@ -131,6 +137,7 @@ async fn dbus_loop(
     dpi: u32,
     frames: Sender<FrameUpdate>,
     store: Option<ConfigStore>,
+    mut moves: tokio::sync::mpsc::UnboundedReceiver<[i32; 2]>,
 ) -> Result<()> {
     // 皮肤路径无效时降级为默认皮肤并保留说明，不能因此让整个悬浮窗退出。
     let mut skin_renderer = match load_skin_renderer(&config) {
@@ -145,6 +152,15 @@ async fn dbus_loop(
     let connection = zbus::Connection::session()
         .await
         .context("cannot connect to the session bus; is trafficviewd running?")?;
+    // 固定名做单实例：菜单入口与会话自启动都可能在同一个会话里拉起悬浮窗。
+    match connection.request_name("com.trafficview.Overlay").await {
+        Ok(()) => {}
+        Err(zbus::Error::NameTaken) => {
+            eprintln!("overlay: another instance is already running");
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    }
     let proxy = Daemon1Proxy::new(&connection)
         .await
         .context("cannot reach trafficviewd; start the daemon first")?;
@@ -222,6 +238,12 @@ async fn dbus_loop(
                     }
                 }
             }
+            position = moves.recv() => {
+                let Some(position) = position else { break };
+                if let Err(error) = persist_position(&proxy, position).await {
+                    eprintln!("overlay: cannot persist the dragged position: {error:#}");
+                }
+            }
             _ = health.tick() => {
                 let owned = match zbus::names::BusName::try_from("com.trafficview.Daemon1") {
                     Ok(name) => bus.name_has_owner(name).await.unwrap_or(false),
@@ -233,6 +255,24 @@ async fn dbus_loop(
             }
         }
     }
+    Ok(())
+}
+
+/// 拖动结束后经 daemon 写盘并广播 ConfigChanged：daemon 的内存配置同步更新，
+/// 否则后续任何配置操作都会用旧坐标覆盖掉用户拖动的位置。
+async fn persist_position(proxy: &Daemon1Proxy<'_>, position: [i32; 2]) -> Result<()> {
+    use std::collections::HashMap;
+    use zbus::zvariant::{OwnedValue, Value};
+
+    let mut overlay: HashMap<String, Value<'static>> = HashMap::new();
+    overlay.insert("position".into(), Value::from(position.to_vec()));
+    overlay.insert("position_preset".into(), Value::from("manual"));
+    let mut updates: HashMap<String, OwnedValue> = HashMap::new();
+    updates.insert(
+        "overlay".into(),
+        OwnedValue::try_from(Value::from(overlay)).map_err(|error| anyhow::anyhow!(error))?,
+    );
+    proxy.update_config(updates).await?;
     Ok(())
 }
 
@@ -323,12 +363,16 @@ struct WindowContext {
     size: (u32, u32),
     last_key: String,
     dragging: Option<(i16, i16, i32, i32)>,
+    /// 拖动结束后的坐标；在 daemon 回传 Manual 配置前生效，避免被旧预设弹回。
+    pending_manual: Option<[i32; 2]>,
+    /// 把拖动结果交给 D-Bus 线程持久化。
+    moves: tokio::sync::mpsc::UnboundedSender<[i32; 2]>,
     /// 是否设置 _NET_WM_STATE_ABOVE。
     always_on_top: bool,
 }
 
 impl WindowContext {
-    fn new(config: &Config) -> Result<Self> {
+    fn new(config: &Config, moves: tokio::sync::mpsc::UnboundedSender<[i32; 2]>) -> Result<Self> {
         let (connection, screen_num) = x11rb::connect(None)?;
         let screen = &connection.setup().roots[screen_num];
         let visual = screen
@@ -453,6 +497,8 @@ impl WindowContext {
             size: (width as u32, height as u32),
             last_key: String::new(),
             dragging: None,
+            pending_manual: None,
+            moves,
             always_on_top,
         })
     }
@@ -531,13 +577,17 @@ impl WindowContext {
     }
 
     /// 根据位置预设解析目标坐标并移动窗口；拖动中不打断，让事件循环维持位置。
-    fn apply_position(
-        &mut self,
-        preset: PositionPreset,
-        manual: [i32; 2],
-    ) -> Result<()> {
+    fn apply_position(&mut self, preset: PositionPreset, manual: [i32; 2]) -> Result<()> {
         if self.dragging.is_some() {
             return Ok(());
+        }
+        // 拖动结果要经 D-Bus 往返才会出现在后续帧里；在此之前忽略仍带着旧预设的帧。
+        if let Some(pending) = self.pending_manual {
+            if preset == PositionPreset::Manual && manual == pending {
+                self.pending_manual = None;
+            } else {
+                return Ok(());
+            }
         }
         let (screen_w, screen_h) = {
             let screen = &self.connection.setup().roots[self.screen_num];
@@ -548,7 +598,9 @@ impl WindowContext {
             self.position = target;
             self.connection.configure_window(
                 self.window,
-                &x11rb::protocol::xproto::ConfigureWindowAux::new().x(target.0).y(target.1),
+                &x11rb::protocol::xproto::ConfigureWindowAux::new()
+                    .x(target.0)
+                    .y(target.1),
             )?;
         }
         Ok(())
@@ -584,13 +636,14 @@ impl WindowContext {
         Ok(())
     }
 
-    fn handle_event(&mut self, event: Event, store: Option<&ConfigStore>) -> Result<()> {
+    fn handle_event(&mut self, event: Event) -> Result<()> {
         match event {
             Event::Expose(event) if event.count == 0 => {
                 self.last_key.clear();
             }
             Event::ButtonPress(event) if event.detail == 1 => {
                 let geometry = self.connection.get_geometry(self.window)?.reply()?;
+                self.pending_manual = None;
                 self.dragging = Some((
                     event.root_x,
                     event.root_y,
@@ -616,18 +669,14 @@ impl WindowContext {
                             self.window,
                             &x11rb::protocol::xproto::ConfigureWindowAux::new().x(x).y(y),
                         )?;
-                        if let Some(store) = store {
-                            if let Ok(mut config) = store.load() {
-                                config.overlay.position = [x, y];
-                                config.overlay.position_preset = PositionPreset::Manual;
-                                let _ = store.save(&config);
-                            }
-                        }
                     }
                 }
             }
-            Event::ButtonRelease(_) => {
-                self.dragging = None;
+            Event::ButtonRelease(_) if self.dragging.take().is_some() => {
+                let position = [self.position.0, self.position.1];
+                // 保持本地位置直到 daemon 把 Manual 配置广播回来。
+                self.pending_manual = Some(position);
+                let _ = self.moves.send(position);
             }
             _ => {}
         }
@@ -639,8 +688,13 @@ fn intern<C: x11rb::connection::Connection>(connection: &C, name: &[u8]) -> Resu
     Ok(connection.intern_atom(false, name)?.reply()?.atom)
 }
 
-fn x11_loop(config: Config, frames: Receiver<FrameUpdate>, store: Option<ConfigStore>) {
-    let mut context = match WindowContext::new(&config) {
+fn x11_loop(
+    config: Config,
+    frames: Receiver<FrameUpdate>,
+    store: Option<ConfigStore>,
+    moves: tokio::sync::mpsc::UnboundedSender<[i32; 2]>,
+) {
+    let mut context = match WindowContext::new(&config, moves.clone()) {
         Ok(context) => context,
         Err(error) => {
             eprintln!("overlay: cannot create the X11 window: {error:#}");
@@ -650,7 +704,7 @@ fn x11_loop(config: Config, frames: Receiver<FrameUpdate>, store: Option<ConfigS
     let _ = context.apply_click_through(config.overlay.click_through);
     let mut last_frame: Option<RenderedFrame> = None;
     loop {
-        if let Err(error) = pump_events(&mut context, store.as_ref()) {
+        if let Err(error) = pump_events(&mut context) {
             eprintln!("overlay: event loop error: {error:#}");
             break;
         }
@@ -663,9 +717,7 @@ fn x11_loop(config: Config, frames: Receiver<FrameUpdate>, store: Option<ConfigS
                             last_frame = Some(update.frame);
                             drew = true;
                         }
-                        Err(error)
-                            if error.to_string().contains("window mode changed") =>
-                        {
+                        Err(error) if error.to_string().contains("window mode changed") => {
                             // show_in_taskbar / always_on_top 切换：用新配置重建窗口，
                             // 重建完成后再重画一次最后一帧。
                             drop(context);
@@ -673,17 +725,14 @@ fn x11_loop(config: Config, frames: Receiver<FrameUpdate>, store: Option<ConfigS
                                 .as_ref()
                                 .and_then(|store| store.load().ok())
                                 .unwrap_or(config.clone());
-                            context = match WindowContext::new(&next_config) {
+                            context = match WindowContext::new(&next_config, moves.clone()) {
                                 Ok(ctx) => ctx,
                                 Err(error) => {
-                                    eprintln!(
-                                        "overlay: cannot recreate window: {error:#}"
-                                    );
+                                    eprintln!("overlay: cannot recreate window: {error:#}");
                                     return;
                                 }
                             };
-                            let _ = context
-                                .apply_click_through(next_config.overlay.click_through);
+                            let _ = context.apply_click_through(next_config.overlay.click_through);
                             if let Some(frame) = &last_frame {
                                 let redo = FrameUpdate {
                                     frame: frame.clone(),
@@ -714,9 +763,9 @@ fn x11_loop(config: Config, frames: Receiver<FrameUpdate>, store: Option<ConfigS
     }
 }
 
-fn pump_events(context: &mut WindowContext, store: Option<&ConfigStore>) -> Result<()> {
+fn pump_events(context: &mut WindowContext) -> Result<()> {
     while let Some(event) = context.connection.poll_for_event()? {
-        context.handle_event(event, store)?;
+        context.handle_event(event)?;
     }
     Ok(())
 }

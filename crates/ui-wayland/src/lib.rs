@@ -141,7 +141,7 @@ fn is_unsupported(error: &anyhow::Error) -> bool {
 
 /// 固定布局或原生皮肤的统一帧来源。
 pub(crate) enum FrameSource {
-    Fixed(Config),
+    Fixed(Box<Config>),
     Skin(Box<Renderer>),
 }
 
@@ -149,7 +149,7 @@ impl FrameSource {
     pub(crate) fn from_config(config: &Config) -> Result<Self> {
         let path = config.overlay.skin.trim();
         if path.is_empty() {
-            return Ok(Self::Fixed(config.clone()));
+            return Ok(Self::Fixed(Box::new(config.clone())));
         }
         let skin = Skin::load(path).with_context(|| format!("cannot load skin {path}"))?;
         let renderer = Renderer::new(skin).context("cannot prepare skin renderer")?;
