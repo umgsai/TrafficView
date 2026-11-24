@@ -130,6 +130,22 @@ impl NetSampler {
     ) -> io::Result<BTreeMap<String, InterfaceSample>> {
         match crate::netlink::read_link_counters() {
             Ok(links) => {
+                // 某些驱动/内核组合下，rtnetlink RTM_GETLINK dump 会漏掉接口
+                // （例如某些 WiFi 驱动不暴露 IFLA_STATS64）。对比 /proc/net/dev
+                // 确认没有漏网之鱼；漏了就回退到 procfs。
+                let nl_names: std::collections::HashSet<_> =
+                    links.iter().map(|l| l.name.as_str()).collect();
+                let proc_text = fs::read_to_string(self.root.join("net/dev"))?;
+                let proc_names: std::collections::HashSet<_> = parse_proc_net_dev_all(&proc_text)
+                    .into_iter()
+                    .map(|(name, _, _)| name)
+                    .collect();
+                let missing: Vec<_> =
+                    proc_names.iter().filter(|n| !nl_names.contains(n.as_str())).collect();
+                if !missing.is_empty() {
+                    self.last_source = "procfs";
+                    return self.sample_all_from_proc(elapsed);
+                }
                 self.last_source = "netlink";
                 let counters: Vec<(String, u64, u64)> = links
                     .into_iter()

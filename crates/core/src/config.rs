@@ -170,14 +170,29 @@ pub enum RateUnit {
     Bits,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PositionPreset {
+    #[default]
+    BottomRight,
+    BottomLeft,
+    TopRight,
+    TopLeft,
+    Manual,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OverlayConfig {
     pub visible: bool,
     pub position: [i32; 2],
+    #[serde(default)]
+    pub position_preset: PositionPreset,
     pub opacity: f32,
     pub click_through: bool,
     pub always_on_top: bool,
+    /// 切换为普通窗口（不设 override_redirect），使窗口管理器将其纳入任务栏。
+    pub show_in_taskbar: bool,
     /// 原生皮肤目录；空字符串使用内置固定布局。
     pub skin: String,
     pub units: RateUnit,
@@ -215,9 +230,11 @@ impl Default for OverlayConfig {
         Self {
             visible: true,
             position: [40, 40],
-            opacity: 0.9,
+            position_preset: PositionPreset::BottomRight,
+            opacity: 0.7,
             click_through: false,
             always_on_top: true,
+            show_in_taskbar: false,
             skin: String::new(),
             units: RateUnit::Bytes,
             items: default_items(),
@@ -543,7 +560,7 @@ mod tests {
         assert_eq!(cfg.sample_interval_ms, 1000);
         assert_eq!(cfg.active_interface, "");
         assert!(cfg.overlay.visible);
-        assert_eq!(cfg.overlay.opacity, 0.9);
+        assert_eq!(cfg.overlay.opacity, 0.7);
         assert_eq!(cfg.overlay.units, RateUnit::Bytes);
         assert!(cfg.overlay.skin.is_empty());
         assert_eq!(

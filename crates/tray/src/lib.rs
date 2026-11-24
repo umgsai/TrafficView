@@ -9,7 +9,9 @@ use std::{
 
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
-use trafficview_core::{config::ConfigStore, format::format_rate, Snapshot};
+use trafficview_core::{
+    config::ConfigStore, format::format_bytes, format::format_rate, Snapshot,
+};
 use trafficview_render::tray_icon;
 use zbus::{
     object_server::SignalContext,
@@ -25,6 +27,7 @@ const WATCHER_PATH: &str = "/StatusNotifierWatcher";
 
 const ITEM_PAUSE: i32 = 1;
 const ITEM_OVERLAY: i32 = 2;
+const ITEM_TASKBAR: i32 = 4;
 const ITEM_QUIT: i32 = 3;
 const ITEM_INTERFACES: i32 = 10;
 const ITEM_CONFIG: i32 = 20;
@@ -48,6 +51,10 @@ trait Daemon1 {
     /// 必须标记为不缓存，否则代理会一直返回首次读到的 false。
     #[zbus(property(emits_changed_signal = "false"))]
     fn paused(&self) -> zbus::Result<bool>;
+    #[zbus(property(emits_changed_signal = "false"))]
+    fn overlay_visible(&self) -> zbus::Result<bool>;
+    #[zbus(property(emits_changed_signal = "false"))]
+    fn overlay_show_in_taskbar(&self) -> zbus::Result<bool>;
 
     #[zbus(signal)]
     fn sample(&self, snapshot: HashMap<String, OwnedValue>) -> zbus::Result<()>;
@@ -64,6 +71,7 @@ struct Model {
     snapshot: Option<Snapshot>,
     paused: bool,
     overlay_visible: bool,
+    show_in_taskbar: bool,
     interfaces: Vec<String>,
     active_interface: String,
     config_path: Option<PathBuf>,
@@ -75,6 +83,25 @@ struct Model {
 
 impl Model {
     fn title(&self) -> String {
+        if !self.show_in_taskbar {
+            return self.base_title();
+        }
+        // "Show in taskbar" 开启时把实时指标塞到 title 里，让 dock 直接显示。
+        match (&self.snapshot, self.online, self.paused) {
+            (_, false, _) => self.base_title(),
+            (_, true, true) => format!("⏸ {} · {}% · {}%", self.base_title(), 0, 0),
+            (Some(s), true, false) => format!(
+                "↓{} ↑{} · C{:.0} M{:.0}",
+                format_rate(s.net.rx_bps),
+                format_rate(s.net.tx_bps),
+                s.cpu.total_pct,
+                s.mem.used_pct
+            ),
+            (None, true, false) => self.base_title(),
+        }
+    }
+
+    fn base_title(&self) -> String {
         if !self.online {
             "TrafficView (daemon offline)".into()
         } else if self.paused {
@@ -85,26 +112,78 @@ impl Model {
     }
 
     fn tool_tip(&self) -> (String, String) {
-        let (title, detail) = match (&self.snapshot, self.online, self.paused) {
-            (_, false, _) => ("daemon offline; retrying".into(), String::new()),
-            (_, true, true) => ("sampling paused".into(), String::new()),
-            (Some(snapshot), true, false) => (
-                format!(
-                    "↓ {}  ↑ {}",
-                    format_rate(snapshot.net.rx_bps),
-                    format_rate(snapshot.net.tx_bps)
-                ),
-                format!(
-                    "{} · CPU {:.0}% · MEM {:.0}%",
-                    snapshot.net.iface, snapshot.cpu.total_pct, snapshot.mem.used_pct
-                ),
+        let (title, mut body) = match (&self.snapshot, self.online, self.paused) {
+            (_, false, _) => (
+                "TrafficView".into(),
+                "daemon offline; retrying…".into(),
             ),
-            (None, true, false) => ("waiting for the first sample".into(), String::new()),
+            (_, true, true) => ("TrafficView (paused)".into(), String::new()),
+            (Some(s), true, false) => {
+                let title = format!(
+                    "TrafficView · ↓ {}  ↑ {}",
+                    format_rate(s.net.rx_bps),
+                    format_rate(s.net.tx_bps)
+                );
+                let mut body = vec![
+                    format!("Interface: {}", s.net.iface),
+                    format!(
+                        "Network:  ↓ {}  ↑ {}   (total ↓ {} ↑ {})",
+                        format_rate(s.net.rx_bps),
+                        format_rate(s.net.tx_bps),
+                        format_bytes(s.net.rx_total),
+                        format_bytes(s.net.tx_total),
+                    ),
+                    format!(
+                        "CPU:      {:.0}%{}",
+                        s.cpu.total_pct,
+                        s.cpu
+                            .freq_mhz
+                            .map(|f| format!("  @ {} MHz", f))
+                            .unwrap_or_default()
+                    ),
+                    format!(
+                        "Memory:   {:.0}%  (used {} / total {})",
+                        s.mem.used_pct,
+                        format_bytes(s.mem.total - s.mem.available),
+                        format_bytes(s.mem.total),
+                    ),
+                ];
+                if s.mem.swap_pct > 0.0 {
+                    body.push(format!("Swap:     {:.0}%", s.mem.swap_pct));
+                }
+                if let Some(d) = &s.disk {
+                    body.push(format!(
+                        "Disk I/O: ↓ {}  ↑ {}",
+                        format_rate(d.read_bps),
+                        format_rate(d.write_bps),
+                    ));
+                }
+                if let Some(b) = &s.battery {
+                    body.push(format!("Battery:  {:.0}%  {}", b.percent, b.status));
+                }
+                if !s.temps.is_empty() {
+                    let parts: Vec<String> = s
+                        .temps
+                        .iter()
+                        .map(|t| format!("{} {:.0}°C", t.label, t.celsius))
+                        .collect();
+                    body.push(format!("Temp:     {}", parts.join(" · ")));
+                }
+                (title, body.join("\n"))
+            }
+            (None, true, false) => ("TrafficView".into(), "waiting for first sample…".into()),
         };
         match &self.alert {
-            Some((_, message)) if self.online => (title, format!("{detail}\n⚠ {message}")),
-            _ => (title, detail),
+            Some((_, message)) if self.online => {
+                if body.is_empty() {
+                    body = format!("⚠ {message}");
+                } else {
+                    body = format!("{body}\n⚠ {message}");
+                }
+            }
+            _ => {}
         }
+        (title, body)
     }
 
     fn icon(&self) -> trafficview_render::TrayIcon {
@@ -171,13 +250,15 @@ impl StatusNotifierItem {
     #[zbus(property)]
     fn tool_tip(&self) -> ToolTip {
         let model = self.model.read().expect("tray model poisoned");
-        let (title, detail) = model.tool_tip();
-        let icon = model.icon();
+        let (title, body) = model.tool_tip();
+        // ToolTip 四元组 = (icon_name, icon_data, subtitle, body)
+        // Deepin Dock 只把 subtitle (字段 [2]) 当 tooltip 主文本渲染，
+        // icon_data 传空数组（它自己有 tray icon）。
         (
-            String::new(),
-            vec![(icon.width, icon.height, icon.argb)],
+            "trafficview".into(),
+            Vec::new(),
             title,
-            detail,
+            body,
         )
     }
 
@@ -243,6 +324,14 @@ impl DbusMenu {
                     } else {
                         "Show overlay"
                     }),
+                );
+            }
+            ITEM_TASKBAR => {
+                map.insert("label".into(), Value::from("Show metrics in tooltip"));
+                map.insert("type".into(), Value::from("checkmark"));
+                map.insert(
+                    "toggle-state".into(),
+                    Value::from(if model.show_in_taskbar { 1i32 } else { 0i32 }),
                 );
             }
             ITEM_QUIT => {
@@ -312,6 +401,7 @@ impl DbusMenu {
         vec![
             Self::item(ITEM_PAUSE, &model, Vec::new()),
             Self::item(ITEM_OVERLAY, &model, Vec::new()),
+            Self::item(ITEM_TASKBAR, &model, Vec::new()),
             Self::item(ITEM_INTERFACES, &model, interface_items),
             Self::item(ITEM_SETTINGS, &model, Vec::new()),
             Self::item(ITEM_CONFIG, &model, Vec::new()),
@@ -348,6 +438,7 @@ impl DbusMenu {
                 0,
                 ITEM_PAUSE,
                 ITEM_OVERLAY,
+                ITEM_TASKBAR,
                 ITEM_INTERFACES,
                 ITEM_SETTINGS,
                 ITEM_CONFIG,
@@ -443,6 +534,15 @@ impl DbusMenu {
                 }
                 .to_string(),
             )),
+            ITEM_TASKBAR => Some((
+                "SetOverlayShowInTaskbar",
+                {
+                    let mut model = self.model.write().expect("tray model poisoned");
+                    model.show_in_taskbar = !model.show_in_taskbar;
+                    model.show_in_taskbar
+                }
+                .to_string(),
+            )),
             ITEM_AUTO => Some(("SetActiveInterface", String::new())),
             id if id >= ITEM_IFACE_BASE => {
                 let name = {
@@ -476,9 +576,28 @@ impl DbusMenu {
             "SetOverlayVisible" => {
                 call_daemon(&self.daemon, "SetOverlayVisible", &(value == "true",)).await
             }
+            "SetOverlayShowInTaskbar" => {
+                call_daemon(
+                    &self.daemon,
+                    "SetOverlayShowInTaskbar",
+                    &(value == "true",),
+                )
+                .await
+            }
             _ => call_daemon(&self.daemon, "SetActiveInterface", &(value.as_str(),)).await,
         };
         result.map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+
+        // ITEM_TASKBAR 切到 true 时发一条通知
+        if method == "SetOverlayShowInTaskbar" && value == "true" {
+            let _ = notify_via_dbus(
+                &self.daemon,
+                "TrafficView",
+                "Show metrics in tooltip",
+                "悬停托盘图标即可查看实时网速/CPU/内存指标，移走自动消失",
+            ).await;
+        }
+
         Ok(true)
     }
 
@@ -557,6 +676,35 @@ where
     Ok(())
 }
 
+/// 通过 freedesktop Notifications 发送一条桌面通知。
+async fn notify_via_dbus(
+    connection: &zbus::Connection,
+    app_name: &str,
+    summary: &str,
+    body: &str,
+) -> zbus::Result<()> {
+    use std::collections::HashMap;
+    connection
+        .call_method(
+            Some("org.freedesktop.Notifications"),
+            "/org/freedesktop/Notifications",
+            Some("org.freedesktop.Notifications"),
+            "Notify",
+            &(
+                app_name,
+                0u32,
+                "utilities-system-monitor",
+                summary,
+                body,
+                Vec::<String>::new(),
+                HashMap::<String, String>::new(),
+                1500i32,
+            ),
+        )
+        .await?;
+    Ok(())
+}
+
 /// 设置窗口的位置：与托盘同目录（打包安装后的 `/usr/bin`），否则交给 PATH。
 fn settings_binary() -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
@@ -588,8 +736,14 @@ async fn run_async() -> Result<()> {
         .and_then(|store| store.load().ok())
         .map(|config| config.overlay.visible)
         .unwrap_or(true);
+    let show_in_taskbar = store
+        .as_ref()
+        .and_then(|store| store.load().ok())
+        .map(|config| config.overlay.show_in_taskbar)
+        .unwrap_or(false);
     let model = Arc::new(RwLock::new(Model {
         overlay_visible,
+        show_in_taskbar,
         config_path: store.as_ref().map(|store| store.path().to_path_buf()),
         ..Model::default()
     }));
@@ -644,16 +798,24 @@ async fn run_async() -> Result<()> {
                 };
                 if changed {
                     let _ = StatusNotifierItem::new_icon(&item_context).await;
-                    let _ = StatusNotifierItem::new_title(&item_context).await;
                 }
+                // title 每秒都在变（速率、CPU、MEM），emit 让 dock 更新。
+                let _ = StatusNotifierItem::new_title(&item_context).await;
                 let _ = StatusNotifierItem::new_tool_tip(&item_context).await;
             }
             Some(_) = config_changes.next() => {
                 refresh_interfaces(&proxy, &model).await;
-                // Pause 不改采样信号，必须从属性同步，否则菜单标签永远显示 Pause。
+                // 从 daemon 拉取最新状态，避免 tray model 与配置漂移。
                 if let Ok(paused) = proxy.paused().await {
                     model.write().expect("tray model poisoned").paused = paused;
                 }
+                if let Ok(visible) = proxy.overlay_visible().await {
+                    model.write().expect("tray model poisoned").overlay_visible = visible;
+                }
+                if let Ok(show) = proxy.overlay_show_in_taskbar().await {
+                    model.write().expect("tray model poisoned").show_in_taskbar = show;
+                }
+                let _ = StatusNotifierItem::new_title(&item_context).await;
                 let _ = StatusNotifierItem::new_tool_tip(&item_context).await;
                 let _ = DbusMenu::layout_updated(&menu_context, 1, 0).await;
             }

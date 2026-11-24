@@ -79,6 +79,16 @@ impl Daemon1 {
         self.state.read().await.paused
     }
 
+    #[zbus(property(emits_changed_signal = "false"))]
+    async fn overlay_visible(&self) -> bool {
+        self.state.read().await.config.overlay.visible
+    }
+
+    #[zbus(property(emits_changed_signal = "false"))]
+    async fn overlay_show_in_taskbar(&self) -> bool {
+        self.state.read().await.config.overlay.show_in_taskbar
+    }
+
     /// M4 新增只读属性：各采集器的可用性；值含 `available` 与 `reason`。
     #[zbus(property(emits_changed_signal = "false"))]
     async fn collector_status(&self) -> HashMap<String, OwnedValue> {
@@ -244,6 +254,17 @@ impl Daemon1 {
         visible: bool,
     ) -> zbus::fdo::Result<()> {
         self.state.write().await.config.overlay.visible = visible;
+        self.persist().await;
+        let _ = Daemon1::config_changed(&context).await;
+        Ok(())
+    }
+
+    async fn set_overlay_show_in_taskbar(
+        &self,
+        #[zbus(signal_context)] context: SignalContext<'_>,
+        show: bool,
+    ) -> zbus::fdo::Result<()> {
+        self.state.write().await.config.overlay.show_in_taskbar = show;
         self.persist().await;
         let _ = Daemon1::config_changed(&context).await;
         Ok(())

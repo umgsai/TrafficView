@@ -9,7 +9,7 @@ use std::{
 use anyhow::{bail, Context, Result};
 use futures_util::StreamExt;
 use trafficview_core::{
-    config::{Config, ConfigStore},
+    config::{Config, ConfigStore, PositionPreset},
     Snapshot,
 };
 use trafficview_render::RenderedFrame;
@@ -60,8 +60,12 @@ pub struct FrameUpdate {
     pub click_through: bool,
     /// 配置中的悬浮窗可见性；隐藏时不向窗口提交像素。
     pub visible: bool,
-    /// 配置中的目标位置；仅在与上次应用值不同时移动窗口，避免拖动后被拉回。
-    pub position: (i32, i32),
+    /// 位置预设；根据屏幕尺寸解析实际坐标。
+    pub position_preset: PositionPreset,
+    /// Manual 模式下的坐标；其他 preset 会被忽略。
+    pub manual_position: [i32; 2],
+    /// 是否设置 _NET_WM_STATE_ABOVE。
+    pub always_on_top: bool,
 }
 
 /// 将窗口位置夹回屏幕内，避免拖出可见区域。
@@ -72,6 +76,26 @@ pub fn clamp_position(position: (i32, i32), size: (u32, u32), screen: (u16, u16)
         position.0.clamp(0, max_x.max(0)),
         position.1.clamp(0, max_y.max(0)),
     )
+}
+
+/// 根据位置预设解析实际坐标；Manual 时直接用 config.position。
+pub fn resolve_position(
+    preset: PositionPreset,
+    manual: [i32; 2],
+    size: (u32, u32),
+    screen: (u16, u16),
+) -> (i32, i32) {
+    let margin = 200i32;
+    let (sw, sh) = (screen.0 as i32, screen.1 as i32);
+    let (w, h) = (size.0 as i32, size.1 as i32);
+    let pos = match preset {
+        PositionPreset::BottomRight => (sw - w - margin, sh - h - margin),
+        PositionPreset::BottomLeft => (margin, sh - h - margin),
+        PositionPreset::TopRight => (sw - w - margin, margin),
+        PositionPreset::TopLeft => (margin, margin),
+        PositionPreset::Manual => (manual[0], manual[1]),
+    };
+    clamp_position(pos, size, screen)
 }
 
 /// 启动悬浮窗；阻塞直到窗口线程退出或 D-Bus 断开。
@@ -241,7 +265,9 @@ fn send_frame(
             frame,
             click_through: config.overlay.click_through,
             visible: config.overlay.visible,
-            position: (config.overlay.position[0], config.overlay.position[1]),
+            position_preset: config.overlay.position_preset,
+            manual_position: config.overlay.position,
+            always_on_top: config.overlay.always_on_top,
         })
         .map_err(|_| anyhow::anyhow!("overlay window closed"))
 }
@@ -293,12 +319,12 @@ struct WindowContext {
     gc: u32,
     depth: u8,
     position: (i32, i32),
-    /// 上次从配置应用的位置；只在配置值变化时移动窗口，拖动结束不会被旧值拉回。
-    config_position: (i32, i32),
     visible: bool,
     size: (u32, u32),
     last_key: String,
     dragging: Option<(i16, i16, i32, i32)>,
+    /// 是否设置 _NET_WM_STATE_ABOVE。
+    always_on_top: bool,
 }
 
 impl WindowContext {
@@ -327,19 +353,23 @@ impl WindowContext {
                 screen.default_colormap,
             ),
         };
-        let window = connection.generate_id()?;
-        let position = clamp_position(
-            (config.overlay.position[0], config.overlay.position[1]),
-            (
-                trafficview_render::layout(&config.overlay.items, &empty_snapshot(), 96).width,
-                trafficview_render::layout(&config.overlay.items, &empty_snapshot(), 96).height,
-            ),
+        let always_on_top = config.overlay.always_on_top;
+        let overlay_size = (
+            trafficview_render::layout(&config.overlay.items, &empty_snapshot(), 96).width,
+            trafficview_render::layout(&config.overlay.items, &empty_snapshot(), 96).height,
+        );
+        let position = resolve_position(
+            config.overlay.position_preset,
+            config.overlay.position,
+            overlay_size,
             (screen.width_in_pixels, screen.height_in_pixels),
         );
         let width =
             trafficview_render::layout(&config.overlay.items, &empty_snapshot(), 96).width as u16;
         let height =
             trafficview_render::layout(&config.overlay.items, &empty_snapshot(), 96).height as u16;
+        // overlay 永远是悬浮窗（override_redirect + DOCK 类型），
+        // 不受 show_in_taskbar 影响——后者只控制 tray 图标旁是否显示实时指标。
         let aux = CreateWindowAux::new()
             .background_pixel(0)
             .border_pixel(0)
@@ -352,6 +382,7 @@ impl WindowContext {
                     | EventMask::POINTER_MOTION
                     | EventMask::STRUCTURE_NOTIFY,
             );
+        let window = connection.generate_id()?;
         connection.create_window(
             depth,
             window,
@@ -368,28 +399,32 @@ impl WindowContext {
         let gc = connection.generate_id()?;
         connection.create_gc(gc, window, &CreateGCAux::new())?;
 
-        let dock = intern(&connection, b"_NET_WM_WINDOW_TYPE_DOCK")?;
-        let window_type = intern(&connection, b"_NET_WM_WINDOW_TYPE")?;
+        // overlay 永远是 DOCK 类型（不受 WM 管理），不进入任务栏。
+        let wm_type_atom = intern(&connection, b"_NET_WM_WINDOW_TYPE")?;
+        let type_atom = intern(&connection, b"_NET_WM_WINDOW_TYPE_DOCK")?;
         connection.change_property(
             PropMode::REPLACE,
             window,
-            window_type,
+            wm_type_atom,
             AtomEnum::ATOM,
             32,
             1,
-            &dock.to_ne_bytes(),
+            &type_atom.to_ne_bytes(),
         )?;
-        let above = intern(&connection, b"_NET_WM_STATE_ABOVE")?;
-        let state = intern(&connection, b"_NET_WM_STATE")?;
-        connection.change_property(
-            PropMode::REPLACE,
-            window,
-            state,
-            AtomEnum::ATOM,
-            32,
-            1,
-            &above.to_ne_bytes(),
-        )?;
+
+        if always_on_top {
+            let above = intern(&connection, b"_NET_WM_STATE_ABOVE")?;
+            let state = intern(&connection, b"_NET_WM_STATE")?;
+            connection.change_property(
+                PropMode::REPLACE,
+                window,
+                state,
+                AtomEnum::ATOM,
+                32,
+                1,
+                &above.to_ne_bytes(),
+            )?;
+        }
         let class = intern(&connection, b"WM_CLASS")?;
         connection.change_property(
             PropMode::REPLACE,
@@ -414,16 +449,22 @@ impl WindowContext {
             gc,
             depth,
             position,
-            config_position: (config.overlay.position[0], config.overlay.position[1]),
             visible: config.overlay.visible,
             size: (width as u32, height as u32),
             last_key: String::new(),
             dragging: None,
+            always_on_top,
         })
     }
 
     fn draw(&mut self, update: &FrameUpdate) -> Result<()> {
-        self.apply_position(update.position)?;
+        // always_on_top 变化需要重建窗口（WM state 在已映射窗口上难以可靠修改）。
+        // show_in_taskbar 只影响 tray title，与 overlay 窗口行为无关，不触发重建。
+        let mode_changed = update.always_on_top != self.always_on_top;
+        if mode_changed {
+            return Err(anyhow::anyhow!("window mode changed; recreate needed"));
+        }
+        self.apply_position(update.position_preset, update.manual_position)?;
         let became_visible = update.visible && !self.visible;
         if became_visible {
             // 重新映射后窗口内容可能已丢失，强制重画一次。
@@ -489,12 +530,12 @@ impl WindowContext {
         Ok(())
     }
 
-    /// 只响应配置值的变化；拖动时窗口位置由事件循环维护，不会被旧配置拉回。
-    fn apply_position(&mut self, requested: (i32, i32)) -> Result<()> {
-        if requested == self.config_position {
-            return Ok(());
-        }
-        self.config_position = requested;
+    /// 根据位置预设解析目标坐标并移动窗口；拖动中不打断，让事件循环维持位置。
+    fn apply_position(
+        &mut self,
+        preset: PositionPreset,
+        manual: [i32; 2],
+    ) -> Result<()> {
         if self.dragging.is_some() {
             return Ok(());
         }
@@ -502,12 +543,12 @@ impl WindowContext {
             let screen = &self.connection.setup().roots[self.screen_num];
             (screen.width_in_pixels, screen.height_in_pixels)
         };
-        let (x, y) = clamp_position(requested, self.size, (screen_w, screen_h));
-        if (x, y) != self.position {
-            self.position = (x, y);
+        let target = resolve_position(preset, manual, self.size, (screen_w, screen_h));
+        if target != self.position {
+            self.position = target;
             self.connection.configure_window(
                 self.window,
-                &x11rb::protocol::xproto::ConfigureWindowAux::new().x(x).y(y),
+                &x11rb::protocol::xproto::ConfigureWindowAux::new().x(target.0).y(target.1),
             )?;
         }
         Ok(())
@@ -578,6 +619,7 @@ impl WindowContext {
                         if let Some(store) = store {
                             if let Ok(mut config) = store.load() {
                                 config.overlay.position = [x, y];
+                                config.overlay.position_preset = PositionPreset::Manual;
                                 let _ = store.save(&config);
                             }
                         }
@@ -606,6 +648,7 @@ fn x11_loop(config: Config, frames: Receiver<FrameUpdate>, store: Option<ConfigS
         }
     };
     let _ = context.apply_click_through(config.overlay.click_through);
+    let mut last_frame: Option<RenderedFrame> = None;
     loop {
         if let Err(error) = pump_events(&mut context, store.as_ref()) {
             eprintln!("overlay: event loop error: {error:#}");
@@ -615,11 +658,50 @@ fn x11_loop(config: Config, frames: Receiver<FrameUpdate>, store: Option<ConfigS
         loop {
             match frames.try_recv() {
                 Ok(update) => {
-                    if let Err(error) = context.draw(&update) {
-                        eprintln!("overlay: cannot submit a frame: {error:#}");
-                        return;
+                    match context.draw(&update) {
+                        Ok(_) => {
+                            last_frame = Some(update.frame);
+                            drew = true;
+                        }
+                        Err(error)
+                            if error.to_string().contains("window mode changed") =>
+                        {
+                            // show_in_taskbar / always_on_top 切换：用新配置重建窗口，
+                            // 重建完成后再重画一次最后一帧。
+                            drop(context);
+                            let next_config = store
+                                .as_ref()
+                                .and_then(|store| store.load().ok())
+                                .unwrap_or(config.clone());
+                            context = match WindowContext::new(&next_config) {
+                                Ok(ctx) => ctx,
+                                Err(error) => {
+                                    eprintln!(
+                                        "overlay: cannot recreate window: {error:#}"
+                                    );
+                                    return;
+                                }
+                            };
+                            let _ = context
+                                .apply_click_through(next_config.overlay.click_through);
+                            if let Some(frame) = &last_frame {
+                                let redo = FrameUpdate {
+                                    frame: frame.clone(),
+                                    click_through: next_config.overlay.click_through,
+                                    visible: next_config.overlay.visible,
+                                    position_preset: next_config.overlay.position_preset,
+                                    manual_position: next_config.overlay.position,
+                                    always_on_top: next_config.overlay.always_on_top,
+                                };
+                                let _ = context.draw(&redo);
+                            }
+                            drew = true;
+                        }
+                        Err(error) => {
+                            eprintln!("overlay: cannot submit a frame: {error:#}");
+                            return;
+                        }
                     }
-                    drew = true;
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
                 // D-Bus 循环已退出（daemon 退出或断连）：关闭悬浮窗，否则进程和窗口会一直残留。

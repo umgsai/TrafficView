@@ -12,7 +12,7 @@ use std::{
 use cosmic_text::{
     Attrs, Buffer, Color as TextColor, Family, FontSystem, Metrics, Shaping, SwashCache,
 };
-use tiny_skia::{Color, Paint, PathBuilder, Pixmap, PixmapPaint, Rect, Transform};
+use tiny_skia::{Color, Paint, PathBuilder, Pixmap, PixmapPaint, Transform};
 use trafficview_core::{
     config::{Config, DisplayItem},
     format::format_rate,
@@ -23,10 +23,11 @@ pub use skin::{Skin, SkinError};
 pub use value::{display_value, is_known_id, numeric_value};
 
 pub const BASE_DPI: u32 = 96;
-const ROW_HEIGHT: f32 = 24.0;
-const PADDING: f32 = 8.0;
-const BASE_WIDTH: f32 = 220.0;
-const FONT_SIZE: f32 = 14.0;
+const ROW_HEIGHT: f32 = 20.0;
+const PADDING: f32 = 6.0;
+const GAP: f32 = 8.0;
+const BASE_WIDTH: f32 = 180.0;
+const FONT_SIZE: f32 = 12.0;
 
 /// 前端从 D-Bus Alert 信号维护的活动告警；只覆盖显示颜色，不修改皮肤或配置。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -452,33 +453,40 @@ pub fn layout(items: &[DisplayItem], snapshot: &Snapshot, dpi: u32) -> Layout {
     let width = BASE_WIDTH * scale;
     let row_height = ROW_HEIGHT * scale;
     let padding = PADDING * scale;
-    let mut rows = Vec::new();
-    for (index, item) in items.iter().enumerate() {
-        if !item.visible {
-            continue;
-        }
+    let gap = GAP * scale;
+    let col_width = (width - padding * 2.0 - gap) / 2.0;
+
+    let visible_items: Vec<&DisplayItem> = items.iter().filter(|i| i.visible).collect();
+    let num_rows = (visible_items.len() as f32 / 2.0).ceil() as usize;
+
+    let mut layout_items = Vec::new();
+    for (index, item) in visible_items.iter().enumerate() {
+        let col = index % 2;
+        let row = index / 2;
         let value = value_text(&item.id, snapshot);
         let text = if item.label.is_empty() {
             value
         } else {
             format!("{} {}", item.label, value)
         };
-        rows.push(LayoutItem {
+        let x = padding + col as f32 * (col_width + gap);
+        let y = padding + row as f32 * row_height;
+        layout_items.push(LayoutItem {
             id: item.id.clone(),
             label: item.label.clone(),
             text,
             color: item.color.clone(),
-            x: padding,
-            y: padding + index as f32 * row_height,
-            width: width - padding * 2.0,
+            x,
+            y,
+            width: col_width,
             height: row_height,
         });
     }
-    let height = (padding * 2.0 + rows.len() as f32 * row_height).max(1.0);
+    let height = (padding * 2.0 + num_rows as f32 * row_height).max(1.0);
     Layout {
         width: width.round() as u32,
         height: height.round() as u32,
-        items: rows,
+        items: layout_items,
         scale,
     }
 }
@@ -547,7 +555,7 @@ pub fn render_with_scheme_and_alerts(
     }
     paint.anti_alias = true;
     let mut builder = PathBuilder::new();
-    let radius = 8.0 * layout.scale;
+    let radius = 10.0 * layout.scale;
     rounded_rect(
         &mut builder,
         layout.width as f32,
@@ -665,10 +673,17 @@ fn cache_key(
 }
 
 fn rounded_rect(builder: &mut PathBuilder, width: f32, height: f32, radius: f32) {
-    let rect = Rect::from_xywh(0.0, 0.0, width, height)
-        .unwrap_or_else(|| Rect::from_xywh(0.0, 0.0, 1.0, 1.0).unwrap());
-    builder.push_rect(rect);
-    let _ = (builder, radius);
+    let r = radius.min(width / 2.0).min(height / 2.0);
+    builder.move_to(r, 0.0);
+    builder.line_to(width - r, 0.0);
+    builder.quad_to(width, 0.0, width, r);
+    builder.line_to(width, height - r);
+    builder.quad_to(width, height, width - r, height);
+    builder.line_to(r, height);
+    builder.quad_to(0.0, height, 0.0, height - r);
+    builder.line_to(0.0, r);
+    builder.quad_to(0.0, 0.0, r, 0.0);
+    builder.close();
 }
 
 fn parse_color(value: &str) -> (u8, u8, u8) {
