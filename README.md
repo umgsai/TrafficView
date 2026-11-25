@@ -72,6 +72,26 @@ cargo build --manifest-path frontends/settings/Cargo.toml
 ./packaging/build-release.sh
 ```
 
+### 在 arm64 上构建
+
+`build-deb.sh` 用 `dpkg --print-architecture` 决定包架构，在 arm64 机器上直接构建即可，
+产物为 `dist/trafficview_1.0.2-1_arm64.deb`：
+
+```bash
+sudo apt install build-essential pkg-config dpkg-dev libgtk-4-dev libadwaita-1-dev
+./packaging/build-deb.sh
+```
+
+说明：
+
+- 主程序是纯 Rust；唯一需要现场编译的 C 代码是 `rusqlite` 的 bundled SQLite，arm64 的
+  `build-essential` 已足够。
+- 设置界面依赖 GTK4/libadwaita。交叉编译需要对应的 arm64 sysroot 与 pkg-config 信息，
+  推荐在 arm64 设备、arm64 容器或用 `qemu` 的 chroot 里原生构建；包的依赖由
+  `dpkg-shlibdeps` 从本地二进制推导，无需手写。
+- 悬浮窗仅支持 X11。arm64 设备通常运行 Wayland 会话，此时 daemon、命令行与托盘可用，
+  但不会自动出现悬浮窗。
+
 ## 运行
 
 ```bash
