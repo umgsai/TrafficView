@@ -531,7 +531,10 @@ impl WindowContext {
                     .height(frame.height),
             )?;
         }
+        self.apply_click_through(update.click_through)?;
         if frame.cache_key == self.last_key {
+            // 内容没变时仍要提交位置/穿透相关的请求。
+            self.connection.flush()?;
             return Ok(());
         }
         // 大帧分块提交，避免超过 X server 的最大请求长度。
@@ -558,7 +561,6 @@ impl WindowContext {
             row += rows;
         }
         self.last_key = frame.cache_key.clone();
-        self.apply_click_through(update.click_through)?;
         self.connection.flush()?;
         Ok(())
     }
@@ -758,14 +760,27 @@ fn x11_loop(
             }
         }
         if !drew {
-            thread::sleep(Duration::from_millis(10));
+            // 拖动时缩短轮询间隔，避免 10ms 的批量延迟叠加到指针移动上。
+            let interval = if context.dragging.is_some() {
+                Duration::from_millis(1)
+            } else {
+                Duration::from_millis(10)
+            };
+            thread::sleep(interval);
         }
     }
 }
 
 fn pump_events(context: &mut WindowContext) -> Result<()> {
+    let mut handled = false;
     while let Some(event) = context.connection.poll_for_event()? {
         context.handle_event(event)?;
+        handled = true;
+    }
+    // `configure_window` 这类无回复请求默认留在 x11rb 的 16KB 发送缓冲里，
+    // 不主动 flush 的话拖动要等下一帧绘制（约 1s）或缓冲写满才生效。
+    if handled {
+        context.connection.flush()?;
     }
     Ok(())
 }

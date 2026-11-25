@@ -5,7 +5,7 @@ members = ["."]
 
 [package]
 name = "trafficview-settings"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 description = "TrafficView 独立 GTK4/libadwaita 设置界面"
 

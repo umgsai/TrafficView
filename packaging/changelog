@@ -1,3 +1,9 @@
+trafficview (1.0.2-1) unstable; urgency=medium
+
+  * 修复悬浮窗拖动不跟手：每个事件批次主动 flush，拖动期间缩短事件轮询间隔。
+
+ -- TrafficView Maintainers <maintainers@trafficview.invalid>  Tue, 25 Nov 2026 18:10:00 +0800
+
 trafficview (1.0.1-1) unstable; urgency=medium
 
   * 悬浮窗提高可读性：按背景自动调整文字对比度，字号与字重加大，增加内描边。
