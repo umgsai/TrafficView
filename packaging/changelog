@@ -1,3 +1,12 @@
+trafficview (1.1.1-1) unstable; urgency=medium
+
+  * 默认主题改为 dark。
+  * 设置界面新增「关于」页面：图标、版本号、功能介绍与 GitHub 链接。
+  * 默认显示项内联 CPU/GPU 温度（两个空格间距），独立 TEMP 行默认隐藏。
+  * 文档更正发行版支持范围：仅 Deepin 25 验证通过，Ubuntu 24.04 实测运行异常。
+
+ -- TrafficView Maintainers <maintainers@trafficview.invalid>  Thu, 26 Nov 2026 18:00:00 +0800
+
 trafficview (1.1.0-1) unstable; urgency=medium
 
   * CPU 温度监控：新增 cpu_temp 显示项，支持 hwmon 与 /sys/class/thermal
