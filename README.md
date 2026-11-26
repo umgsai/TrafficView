@@ -38,17 +38,17 @@ sudo apt install libgtk-4-dev libadwaita-1-dev   # Debian/Ubuntu
 
 ## 发行版支持
 
-本仓库在以下发行版上验证通过：
+本仓库仅在以下发行版上验证通过：
 
 - **Deepin 25**（amd64，本机日常使用与构建）
-- **Ubuntu 24.04 LTS**（amd64，deb 包可直接安装）
 
 deb 包硬依赖：`libc6 (>= 2.35)`、`libgtk-4-1 (>= 4.0.0)`、
-`libadwaita-1-0 (>= 1.4~beta)`。因此以下发行版无法直接安装，需要源码重编
-（可能还得降 GTK4/libadwaita 版本）：
+`libadwaita-1-0 (>= 1.4~beta)`。其它发行版的实际状态：
 
+- **Ubuntu 24.04 LTS**：依赖满足、可以安装，但**实测运行不正常**
+  （具体异常现象与原因待排查），暂不建议在 Ubuntu 上使用该 deb 包。
 - **Ubuntu 22.04 LTS**：libc6 满足（2.35），但 libadwaita 只有 1.2.0，
-  设置界面二进制过不去；核心功能（悬浮窗 / 托盘 / CLI）其实能跑，但
+  设置界面二进制过不去；核心功能（悬浮窗 / 托盘 / CLI）理论上能跑，但
   当前打包脚本把所有二进制打成一个包，被 GTK4 依赖卡死。
 - **Debian 12 Bookworm**：libc6 2.36 满足，但 GTK4 / libadwaita 版本偏旧。
 - **Ubuntu 20.04 LTS / Debian 11 Bullseye**：libc6 也不够（2.31 / 2.31）。
