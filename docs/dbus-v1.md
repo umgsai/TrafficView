@@ -50,7 +50,7 @@ daemon 注册失败时只会退化为“已有实例”，不会并行启动第�
 
 ## 快照字段
 
-顶层必需键：`ts_ms`、`net`、`cpu`、`mem`。`disk`、`gpu`、`filesystems`、
+顶层必需键：`ts_ms`、`net`、`cpu`、`mem`。`cpu_temp`、`disk`、`gpu`、`filesystems`、
 `battery`、`uptime_s` 是可选键，未采集时直接省略（D-Bus variant 没有 null 语义）；
 `temps` 为空 `av`，`plugin` 为空 `a{ss}`。
 
@@ -63,6 +63,7 @@ disk        a{sv}  [可选] read_bps t, write_bps t
 gpu         a{sv}  [可选] 主 GPU 兼容别名：name s, util_pct d, mem_used t,
                    mem_total t, [freq_mhz u], stale b, [observed_at_ms t]
 gpus        av     [可选] 全部 GPU，元素同 `gpu`
+cpu_temp    d      [可选] 代表 CPU 的温度（摄氏度），无可用传感器时省略
 temps       av     [{label s, celsius d}]
 filesystems av     [可选] [{mount s, total t, available t, used_pct d}]
 battery     a{sv}  [可选] percent d, status s

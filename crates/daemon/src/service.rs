@@ -20,12 +20,14 @@ use trafficview_collectors::{
     net::NetSampler,
     netlink::NetlinkWatcher,
     power::read_battery,
+    thermal::{merge_thermal_temps, read_thermal_temps},
     uptime::UptimeState,
 };
 use trafficview_core::{
     clock::monotonic_ms,
     config::{Config, ConfigStore},
     smoothing::Smoother,
+    temp::cpu_temperature,
     ColorScheme, CpuSample, InterfaceInfo, NetSample, Snapshot,
 };
 use zbus::object_server::SignalContext;
@@ -280,7 +282,16 @@ async fn scheduler(
     let mut interfaces: Vec<InterfaceInfo> = Vec::new();
     let mut interfaces_at: Option<Instant> = None;
     loop {
-        let (interval_ms, paused, configured_iface, include_cache, whitelist, blacklist, smoothing) = {
+        let (
+            interval_ms,
+            paused,
+            configured_iface,
+            include_cache,
+            whitelist,
+            blacklist,
+            smoothing,
+            cpu_temp_sensor,
+        ) = {
             let state = state.read().await;
             (
                 state.config.sample_interval_ms,
@@ -290,6 +301,7 @@ async fn scheduler(
                 state.config.interface_whitelist.clone(),
                 state.config.interface_blacklist.clone(),
                 state.config.network_smoothing,
+                state.config.overlay.cpu_temp_sensor.clone(),
             )
         };
         tokio::select! {
@@ -376,7 +388,10 @@ async fn scheduler(
                 None
             }
         };
-        let temps = read_temps(&sys_class.join("hwmon"));
+        let temps = merge_thermal_temps(
+            read_temps(&sys_class.join("hwmon")),
+            read_thermal_temps(&sys_class.join("thermal")),
+        );
         let battery = read_battery(&sys_class.join("power_supply"));
         let filesystems = read_filesystems(&["/".to_string()]);
         let uptime_s = active.uptime.read(&proc_root);
@@ -401,7 +416,7 @@ async fn scheduler(
                 CollectorStatus {
                     available: !temps.is_empty(),
                     reason: if temps.is_empty() {
-                        "no hwmon sensors".into()
+                        "no hwmon or thermal sensors".into()
                     } else {
                         String::new()
                     },
@@ -529,6 +544,7 @@ async fn scheduler(
         );
         snapshot.disk = disk;
         snapshot.temps = temps;
+        snapshot.cpu_temp = cpu_temperature(&snapshot.temps, Some(cpu_temp_sensor.as_str()));
         snapshot.filesystems = filesystems;
         snapshot.battery = battery;
         snapshot.uptime_s = uptime_s;

@@ -418,6 +418,9 @@ pub fn snapshot_to_dbus(snapshot: &Snapshot) -> HashMap<String, OwnedValue> {
                 .collect::<Vec<Value<'static>>>(),
         )),
     );
+    if let Some(cpu_temp) = snapshot.cpu_temp {
+        top.insert("cpu_temp".into(), owned(Value::from(f64::from(cpu_temp))));
+    }
     if let Some(filesystems) = &snapshot.filesystems {
         top.insert(
             "filesystems".into(),
@@ -647,6 +650,10 @@ pub fn snapshot_from_dbus(dict: &HashMap<String, OwnedValue>) -> anyhow::Result<
             });
         }
     }
+    let cpu_temp = dict
+        .get("cpu_temp")
+        .map(|value| -> anyhow::Result<f32> { Ok(f64::try_from(value.try_clone()?)? as f32) })
+        .transpose()?;
     let filesystems = dict
         .get("filesystems")
         .map(|value| -> anyhow::Result<Vec<FilesystemSample>> {
@@ -714,7 +721,7 @@ pub fn snapshot_from_dbus(dict: &HashMap<String, OwnedValue>) -> anyhow::Result<
         disk,
         gpu,
         gpus,
-        cpu_temp: None,
+        cpu_temp,
         temps,
         filesystems,
         battery,
@@ -1271,6 +1278,19 @@ mod tests {
         for key in ["filesystems", "battery", "uptime_s"] {
             assert!(!dict.contains_key(key), "{key}");
         }
+    }
+
+    #[test]
+    fn cpu_temp_is_optional_and_round_trips() {
+        let mut snapshot = snapshot();
+        assert!(!snapshot_to_dbus(&snapshot).contains_key("cpu_temp"));
+
+        snapshot.cpu_temp = Some(66.5);
+        let dict = snapshot_to_dbus(&snapshot);
+        assert!(dict.contains_key("cpu_temp"));
+
+        let decoded = snapshot_from_dbus(&dict).unwrap();
+        assert_eq!(decoded.cpu_temp, Some(66.5));
     }
 
     #[test]
