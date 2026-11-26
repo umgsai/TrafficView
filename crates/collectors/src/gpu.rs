@@ -262,8 +262,7 @@ unsafe fn read_nvml_gpus() -> Result<Vec<GpuSample>, String> {
                 let temp_celsius = temperature.and_then(|get| {
                     let mut celsius = 0u32;
                     // NVML_TEMPERATURE_GPU = 0；读数为整数摄氏度。
-                    (get(device, 0, &mut celsius) == 0 && celsius <= 150)
-                        .then_some(celsius as f32)
+                    (get(device, 0, &mut celsius) == 0 && celsius <= 150).then_some(celsius as f32)
                 });
                 gpus.push(GpuSample {
                     name,
