@@ -33,6 +33,9 @@ pub struct Config {
     pub network_smoothing: NetworkSmoothing,
     /// `auto` 跟随桌面 portal，`light`/`dark` 强制指定。
     pub theme: ThemeMode,
+    /// 界面语言：auto（跟随系统）/ zh / en。
+    #[serde(default = "default_language")]
+    pub language: String,
     pub history: HistoryConfig,
     pub alerts: AlertsConfig,
     pub overlay: OverlayConfig,
@@ -219,6 +222,7 @@ impl Default for Config {
             interface_whitelist: Vec::new(),
             network_smoothing: NetworkSmoothing::None,
             theme: ThemeMode::Dark,
+            language: default_language(),
             history: HistoryConfig::default(),
             alerts: AlertsConfig::default(),
             overlay: OverlayConfig::default(),
@@ -257,6 +261,10 @@ impl Default for DisplayItem {
             visible: true,
         }
     }
+}
+
+fn default_language() -> String {
+    "auto".into()
 }
 
 fn default_items() -> Vec<DisplayItem> {
@@ -380,6 +388,12 @@ impl Config {
                     rule.quiet_hours
                 ));
             }
+        }
+        if !matches!(self.language.as_str(), "auto" | "zh" | "en") {
+            return Err(format!(
+                "language '{}' must be auto, zh or en",
+                self.language
+            ));
         }
         Ok(())
     }
@@ -574,6 +588,20 @@ impl ConfigStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn language_defaults_to_auto_and_validates() {
+        assert_eq!(Config::default().language, "auto");
+        let mut cfg = Config::default();
+        cfg.language = "zh".into();
+        assert!(cfg.validate().is_ok());
+        cfg.language = "fr".into();
+        assert!(cfg.validate().is_err());
+
+        // 旧配置缺 language 字段时回退 auto。
+        let old = toml::from_str::<Config>("sample_interval_ms = 1000").unwrap();
+        assert_eq!(old.language, "auto");
+    }
 
     #[test]
     fn defaults_match_mvp_contract() {

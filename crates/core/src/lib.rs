@@ -1,6 +1,7 @@
 pub mod clock;
 pub mod config;
 pub mod format;
+pub mod i18n;
 pub mod smoothing;
 pub mod temp;
 
