@@ -114,7 +114,7 @@ fn default_items() -> Vec<UiItem> {
             id: "cpu".into(),
             label: "CPU".into(),
             unit: "%".into(),
-            format: "{value}".into(),
+            format: "{value}  {cpu_temp}".into(),
             color: "#FFD43B".into(),
             visible: true,
         },
@@ -124,6 +124,23 @@ fn default_items() -> Vec<UiItem> {
             unit: "%".into(),
             format: "{value}".into(),
             color: "#FFA8A8".into(),
+            visible: true,
+        },
+        UiItem {
+            id: "cpu_temp".into(),
+            label: "TEMP".into(),
+            unit: "°C".into(),
+            format: "{value}".into(),
+            color: "#FFA94D".into(),
+            // 与 core 默认一致：温度内联在 cpu 项中，独立项默认隐藏。
+            visible: false,
+        },
+        UiItem {
+            id: "gpu".into(),
+            label: "GPU".into(),
+            unit: "%".into(),
+            format: "{value}  {gpu_temp}".into(),
+            color: "#B197FC".into(),
             visible: true,
         },
     ]

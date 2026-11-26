@@ -281,7 +281,7 @@ fn default_items() -> Vec<DisplayItem> {
             id: "cpu".into(),
             label: "CPU".into(),
             unit: "%".into(),
-            format: "{value}".into(),
+            format: "{value}  {cpu_temp}".into(),
             color: "#FFD43B".into(),
             visible: true,
         },
@@ -299,13 +299,14 @@ fn default_items() -> Vec<DisplayItem> {
             unit: "°C".into(),
             format: "{value}".into(),
             color: "#FFA94D".into(),
-            visible: true,
+            // 默认内联在 cpu 项中；需要独立一行时再设为 visible = true。
+            visible: false,
         },
         DisplayItem {
             id: "gpu".into(),
             label: "GPU".into(),
             unit: "%".into(),
-            format: "{value} {gpu_temp}".into(),
+            format: "{value}  {gpu_temp}".into(),
             color: "#B197FC".into(),
             visible: true,
         },
@@ -651,9 +652,24 @@ mod tests {
                 unit: "°C".into(),
                 format: "{value}".into(),
                 color: "#FFA94D".into(),
-                visible: true,
+                visible: false,
             }
         );
+        // 默认把温度内联进 cpu / gpu 项，独立 cpu_temp 项保持隐藏。
+        let cpu = cfg
+            .overlay
+            .items
+            .iter()
+            .find(|item| item.id == "cpu")
+            .expect("default cpu item");
+        assert_eq!(cpu.format, "{value}  {cpu_temp}");
+        let gpu = cfg
+            .overlay
+            .items
+            .iter()
+            .find(|item| item.id == "gpu")
+            .expect("default gpu item");
+        assert_eq!(gpu.format, "{value}  {gpu_temp}");
     }
 
     #[test]

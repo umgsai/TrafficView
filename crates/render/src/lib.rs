@@ -1155,7 +1155,13 @@ mod tests {
 
     #[test]
     fn cpu_temp_item_is_hidden_until_a_reading_exists() {
-        let items = Config::default().overlay.items;
+        let mut items = Config::default().overlay.items;
+        // 独立 TEMP 行默认隐藏（温度已内联在 cpu 项）；这里显式打开，验证它仍按读数显隐。
+        items
+            .iter_mut()
+            .find(|item| item.id == "cpu_temp")
+            .unwrap()
+            .visible = true;
         let mut snapshot = snapshot();
 
         let without = layout(&items, &snapshot, 96);

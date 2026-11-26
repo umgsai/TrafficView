@@ -199,40 +199,29 @@ $ trafficview config path
 | `[plugins] enabled` | 插件宿主开关 |
 | `[process_traffic] backend` | `off` / `ebpf` / `af_packet` / `auto` |
 
-CPU 温度显示项 id 为 `cpu_temp`。新生成的配置文件默认已包含该项；已有配置文件不会被自动改写，
-需要手动在 `[[overlay.items]]` 中追加：
+新生成的配置默认把温度内联显示：`cpu` 项为 `format = "{value}  {cpu_temp}"`，
+`gpu` 项为 `format = "{value}  {gpu_temp}"`，即 `CPU 14%  70°C`、`GPU 12%  55°C`；
+独立 `cpu_temp` 项保留在配置里但默认 `visible = false`。检测不到对应传感器时，
+温度段自动省略；检测不到 GPU 时 `gpu` 整行隐藏。
+
+已有配置文件不会被自动改写。若想让 CPU 温度单独占一行，把 `cpu` 项的 `format`
+改回 `"{value}"`，并把 `cpu_temp` 项设为 `visible = true`；若配置里还没有 `gpu`
+项，可手动追加：
 
 ```toml
 [[overlay.items]]
-id = "cpu_temp"
-label = "TEMP"
-unit = "°C"
-format = "{value}"
-color = "#FFA94D"
+id = "gpu"
+label = "GPU"
+unit = "%"
+format = "{value}  {gpu_temp}"
+color = "#B197FC"
 visible = true
 ```
 
-检测不到 CPU 传感器时该项自动隐藏。需要手动指定传感器时，可执行
+需要手动指定 CPU 传感器时，可执行
 `trafficview config set overlay.cpu_temp_sensor k10temp/Tdie`，或在 `[overlay]` 中写
 `cpu_temp_sensor = "..."`。只写 chip 名（如 `k10temp`）会按 label 排序命中第一个匹配项，
 建议写完整 label（如 `k10temp/Tdie`）。
-
-- `gpu`：主 GPU 利用率，默认 `format = "{value} {gpu_temp}"`，温度内联显示；
-  检测不到 GPU 时整行隐藏。已有配置需手动追加：
-
-  ```toml
-  [[overlay.items]]
-  id = "gpu"
-  label = "GPU"
-  unit = "%"
-  format = "{value} {gpu_temp}"
-  color = "#B197FC"
-  visible = true
-  ```
-
-- 显示模板支持 `{cpu_temp}` 与 `{gpu_temp}` 占位符；无对应读数时温度段为空并压缩空白。
-  若希望 CPU 温度跟在 CPU 后面同一项显示（`CPU 14% 70°C`），把 `cpu` 项的 `format`
-  改为 `"{value} {cpu_temp}"`，并把独立 `cpu_temp` 项设为 `visible = false`。
 
 自启动：
 

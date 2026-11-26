@@ -852,7 +852,7 @@ mod tests {
         let items = Config::default().overlay.items;
         let empty = trafficview_render::layout(&items, &empty_snapshot(), 96);
         let sizing = trafficview_render::layout(&items, &sizing_snapshot(), 96);
-        assert_eq!(sizing.items.len(), 6);
+        assert_eq!(sizing.items.len(), 5);
         assert!(sizing.height > empty.height);
     }
 }
