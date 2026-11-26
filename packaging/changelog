@@ -1,3 +1,19 @@
+trafficview (1.1.0-1) unstable; urgency=medium
+
+  * CPU 温度监控：新增 cpu_temp 显示项，支持 hwmon 与 /sys/class/thermal
+    双来源合并去重，自动识别 Intel Package、AMD Tdie/Tctl、x86_pkg_temp、
+    ARM cpu_thermal 等常见传感器。支持 overlay.cpu_temp_sensor 配置覆盖。
+  * GPU 使用率与温度显示：新增 gpu 显示项（GPU name + util_pct + 内联温度），
+    AMD 从 card*/device/hwmon 读取 edge/junction/mem 温度，NVIDIA 同时支持
+    nvidia-smi 与 NVML nvmlDeviceGetTemperature，无 GPU 时整行隐藏。
+  * 显示模板泛化：format 同时支持 {cpu_temp} 与 {gpu_temp} 占位符，无读数时
+    温度段为空并自动压缩空白。
+  * D-Bus cpu_temp / gpu.temp_celsius 可选键，旧客户端兼容。
+  * 悬浮窗初始窗口尺寸自动估算 GPU 项，避免首帧高度跳变。
+  * UI 模板扩展：CPU/GPU 温度可内联到同一显示项，默认 2 空格间距。
+
+ -- TrafficView Maintainers <maintainers@trafficview.invalid>  Thu, 26 Nov 2026 12:50:00 +0800
+
 trafficview (1.0.2-1) unstable; urgency=medium
 
   * 修复悬浮窗拖动不跟手：每个事件批次主动 flush，拖动期间缩短事件轮询间隔。
