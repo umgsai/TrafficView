@@ -179,9 +179,23 @@ $ trafficview config path
 | `[plugins] enabled` | 插件宿主开关 |
 | `[process_traffic] backend` | `off` / `ebpf` / `af_packet` / `auto` |
 
-CPU 温度显示项 id 为 `cpu_temp`，默认配置已包含；检测不到 CPU 传感器时该项自动隐藏。
-需要手动指定传感器时，可执行 `trafficview config set overlay.cpu_temp_sensor k10temp/Tdie`，
-或在 `[overlay]` 中写 `cpu_temp_sensor = "..."`。
+CPU 温度显示项 id 为 `cpu_temp`。新生成的配置文件默认已包含该项；已有配置文件不会被自动改写，
+需要手动在 `[[overlay.items]]` 中追加：
+
+```toml
+[[overlay.items]]
+id = "cpu_temp"
+label = "TEMP"
+unit = "°C"
+format = "{value}"
+color = "#FFA94D"
+visible = true
+```
+
+检测不到 CPU 传感器时该项自动隐藏。需要手动指定传感器时，可执行
+`trafficview config set overlay.cpu_temp_sensor k10temp/Tdie`，或在 `[overlay]` 中写
+`cpu_temp_sensor = "..."`。只写 chip 名（如 `k10temp`）会按 label 排序命中第一个匹配项，
+建议写完整 label（如 `k10temp/Tdie`）。
 
 自启动：
 
