@@ -197,9 +197,22 @@ visible = true
 `cpu_temp_sensor = "..."`。只写 chip 名（如 `k10temp`）会按 label 排序命中第一个匹配项，
 建议写完整 label（如 `k10temp/Tdie`）。
 
-若希望温度跟在 CPU 后面同一项显示（`CPU 14% 70°C`），把 `cpu` 项的 `format` 改为
-`"{value} {cpu_temp}"`，并把独立 `cpu_temp` 项设为 `visible = false`；无温度读数时自动
-退化为只显示 CPU 百分比。
+- `gpu`：主 GPU 利用率，默认 `format = "{value} {gpu_temp}"`，温度内联显示；
+  检测不到 GPU 时整行隐藏。已有配置需手动追加：
+
+  ```toml
+  [[overlay.items]]
+  id = "gpu"
+  label = "GPU"
+  unit = "%"
+  format = "{value} {gpu_temp}"
+  color = "#B197FC"
+  visible = true
+  ```
+
+- 显示模板支持 `{cpu_temp}` 与 `{gpu_temp}` 占位符；无对应读数时温度段为空并压缩空白。
+  若希望 CPU 温度跟在 CPU 后面同一项显示（`CPU 14% 70°C`），把 `cpu` 项的 `format`
+  改为 `"{value} {cpu_temp}"`，并把独立 `cpu_temp` 项设为 `visible = false`。
 
 自启动：
 

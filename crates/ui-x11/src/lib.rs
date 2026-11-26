@@ -812,6 +812,16 @@ fn empty_snapshot() -> Snapshot {
 fn sizing_snapshot() -> Snapshot {
     let mut snapshot = empty_snapshot();
     snapshot.cpu_temp = Some(0.0);
+    snapshot.gpu = Some(trafficview_core::GpuSample {
+        name: "GPU".into(),
+        util_pct: 0.0,
+        mem_used: 0,
+        mem_total: 0,
+        freq_mhz: None,
+        temp_celsius: Some(0.0),
+        stale: false,
+        observed_at_ms: None,
+    });
     snapshot
 }
 
@@ -842,7 +852,7 @@ mod tests {
         let items = Config::default().overlay.items;
         let empty = trafficview_render::layout(&items, &empty_snapshot(), 96);
         let sizing = trafficview_render::layout(&items, &sizing_snapshot(), 96);
-        assert_eq!(sizing.items.len(), 5);
+        assert_eq!(sizing.items.len(), 6);
         assert!(sizing.height > empty.height);
     }
 }
