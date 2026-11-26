@@ -2,6 +2,7 @@ pub mod clock;
 pub mod config;
 pub mod format;
 pub mod smoothing;
+pub mod temp;
 
 use serde::{Deserialize, Serialize};
 
