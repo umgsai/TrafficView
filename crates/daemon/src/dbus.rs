@@ -17,8 +17,8 @@ use trafficview_core::{
         OverlayConfig, PluginsConfig, PositionPreset, ProcessTrafficBackend, ProcessTrafficConfig,
         RateUnit, ThemeMode, SAMPLE_INTERVAL_MAX_MS, SAMPLE_INTERVAL_MIN_MS,
     },
-    BatterySample, CpuSample, DiskSample, FilesystemSample, GpuSample, InterfaceInfo, MemSample,
-    NetSample, ProcessTrafficSample, Snapshot, TempSample, TrafficSummary,
+    i18n, BatterySample, CpuSample, DiskSample, FilesystemSample, GpuSample, InterfaceInfo,
+    MemSample, NetSample, ProcessTrafficSample, Snapshot, TempSample, TrafficSummary,
 };
 use zbus::{
     object_server::SignalContext,
@@ -140,6 +140,7 @@ impl Daemon1 {
             return Err(zbus::fdo::Error::Failed(error.to_string()));
         }
         let rules = config.alerts.rules.clone();
+        let lang = i18n::resolve(&config.language);
         let plugins_enabled = config.plugins.enabled;
         let process_backend = config.process_traffic.backend;
         let process_interval =
@@ -150,6 +151,7 @@ impl Daemon1 {
         state.color_scheme = crate::theme::decide(state.config.theme, state.portal_scheme);
         if let Ok(mut engine) = state.alerts.lock() {
             engine.reload(&rules);
+            engine.set_language(lang);
         }
         let supervisor = state.plugin_supervisor.clone();
         let process_traffic = state.process_traffic.clone();
@@ -290,6 +292,7 @@ impl Daemon1 {
             )));
         }
         let rules = config.alerts.rules.clone();
+        let lang = i18n::resolve(&config.language);
         let plugins_enabled = config.plugins.enabled;
         let supervisor = {
             let mut state = self.state.write().await;
@@ -297,6 +300,7 @@ impl Daemon1 {
             state.color_scheme = crate::theme::decide(state.config.theme, state.portal_scheme);
             if let Ok(mut engine) = state.alerts.lock() {
                 engine.reload(&rules);
+                engine.set_language(lang);
             };
             state.plugin_supervisor.clone()
         };
@@ -840,6 +844,10 @@ pub fn config_to_dbus(config: &Config) -> HashMap<String, OwnedValue> {
         owned(Value::from(smoothing_name(config.network_smoothing))),
     );
     top.insert("theme".into(), owned(Value::from(theme_name(config.theme))));
+    top.insert(
+        "language".into(),
+        owned(Value::from(config.language.clone())),
+    );
     top.insert("history".into(), owned(history_value(&config.history)));
     top.insert("alerts".into(), owned(alerts_value(&config.alerts)));
     top.insert("overlay".into(), owned(overlay_value(&config.overlay)));
@@ -1078,6 +1086,9 @@ pub fn apply_config_update(
             "theme" => {
                 let text = as_string(cloned(value, key)?, key)?;
                 config.theme = parse_theme(&text)?;
+            }
+            "language" => {
+                config.language = as_string(cloned(value, key)?, key)?;
             }
             "history" => {
                 let map = as_map(cloned(value, key)?, key)?;
@@ -1393,6 +1404,17 @@ mod tests {
         let mut decoded = Config::default();
         apply_config_update(&mut decoded, &dict).unwrap();
         assert_eq!(decoded, config);
+    }
+
+    #[test]
+    fn language_roundtrip_through_dbus() {
+        let mut config = Config::default();
+        config.language = "zh".into();
+        let dict = config_to_dbus(&config);
+        assert!(dict.contains_key("language"));
+        let mut updated = Config::default();
+        apply_config_update(&mut updated, &dict).unwrap();
+        assert_eq!(updated.language, "zh");
     }
 
     #[test]

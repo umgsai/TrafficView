@@ -26,6 +26,7 @@ use trafficview_collectors::{
 use trafficview_core::{
     clock::monotonic_ms,
     config::{Config, ConfigStore},
+    i18n,
     smoothing::Smoother,
     temp::cpu_temperature,
     ColorScheme, CpuSample, InterfaceInfo, NetSample, Snapshot,
@@ -130,7 +131,9 @@ pub async fn run_with_options(
         .load_or_create()
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let history = open_history(history_path, &config);
-    let alerts = Mutex::new(AlertEngine::new(config.alerts.rules.clone()));
+    let mut alert_engine = AlertEngine::new(config.alerts.rules.clone());
+    alert_engine.set_language(i18n::resolve(&config.language));
+    let alerts = Mutex::new(alert_engine);
     let plugin_supervisor = plugin_root.map(|root| {
         Arc::new(PluginSupervisor::start(
             root,
@@ -656,7 +659,7 @@ async fn evaluate_alerts(
     tx_bps: u64,
 ) {
     let now_secs = Utc::now().timestamp();
-    let (month_enabled, history) = {
+    let (month_enabled, history, lang) = {
         let state = state.read().await;
         (
             state
@@ -666,6 +669,7 @@ async fn evaluate_alerts(
                 .iter()
                 .any(|rule| rule.enabled && rule.metric == "month_bytes"),
             state.history.clone(),
+            i18n::resolve(&state.config.language),
         )
     };
     let month_bytes = if month_enabled {
@@ -712,7 +716,7 @@ async fn evaluate_alerts(
         if event.active {
             let desktop = event.clone();
             tokio::task::spawn_blocking(move || {
-                if let Err(error) = alerts::send_desktop_notification(&desktop) {
+                if let Err(error) = alerts::send_desktop_notification(&desktop, lang) {
                     warn!(%error, "desktop notification is unavailable");
                 }
             });

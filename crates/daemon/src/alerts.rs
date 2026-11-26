@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use chrono::Local;
 use trafficview_core::{
     config::{parse_hhmm, AlertRule},
+    i18n::{self, tr, trf, Language},
     AlertEvent,
 };
 
@@ -42,13 +43,13 @@ impl Metric {
         }
     }
 
-    fn label(self) -> &'static str {
+    fn label(self, lang: Language) -> &'static str {
         match self {
-            Self::CpuPct => "CPU 使用率",
-            Self::MemPct => "内存使用率",
-            Self::NetRxBps => "下行速率",
-            Self::NetTxBps => "上行速率",
-            Self::MonthBytes => "本月流量",
+            Self::CpuPct => tr(lang, "alert.metric.cpu"),
+            Self::MemPct => tr(lang, "alert.metric.memory"),
+            Self::NetRxBps => tr(lang, "alert.metric.net_rx"),
+            Self::NetTxBps => tr(lang, "alert.metric.net_tx"),
+            Self::MonthBytes => tr(lang, "alert.metric.month_bytes"),
         }
     }
 }
@@ -98,6 +99,7 @@ struct RuleState {
 /// 一个进程内的告警状态机。
 pub struct AlertEngine {
     rules: Vec<RuleState>,
+    lang: Language,
     /// 静默时段按此偏移解释墙上时间；默认系统本地时区。
     offset_minutes: i32,
 }
@@ -106,6 +108,7 @@ impl AlertEngine {
     pub fn new(rules: Vec<AlertRule>) -> Self {
         Self {
             rules: rules.into_iter().filter_map(build).collect(),
+            lang: i18n::detect(),
             offset_minutes: local_offset_minutes(),
         }
     }
@@ -114,8 +117,13 @@ impl AlertEngine {
     pub fn with_offset_minutes(rules: Vec<AlertRule>, offset_minutes: i32) -> Self {
         Self {
             rules: rules.into_iter().filter_map(build).collect(),
+            lang: i18n::detect(),
             offset_minutes,
         }
+    }
+
+    pub fn set_language(&mut self, lang: Language) {
+        self.lang = lang;
     }
 
     /// 配置热加载：不再存在的规则被清理，状态从头建立。
@@ -138,6 +146,7 @@ impl AlertEngine {
     /// 喂入某一指标的一帧；返回需要广播/通知的事件（含恢复）。
     pub fn observe(&mut self, metric: Metric, ts_secs: i64, value: f64) -> Vec<AlertEvent> {
         let mut events = Vec::new();
+        let lang = self.lang;
         let minute = minute_of_day(ts_secs, self.offset_minutes);
         for state in &mut self.rules {
             if state.metric != metric || !state.rule.enabled {
@@ -152,7 +161,7 @@ impl AlertEngine {
                     if state.pending && !quiet {
                         state.pending = false;
                         state.last_notified = Some(ts_secs);
-                        events.push(event(state, ts_secs, value, true));
+                        events.push(event(state, ts_secs, value, true, lang));
                     }
                     continue;
                 }
@@ -165,7 +174,7 @@ impl AlertEngine {
                     state.pending = true;
                 } else if cooldown_elapsed(state, ts_secs) {
                     state.last_notified = Some(ts_secs);
-                    events.push(event(state, ts_secs, value, true));
+                    events.push(event(state, ts_secs, value, true, lang));
                 } else {
                     // 冷却期内重新越限：保持 active，但不再打扰。
                     state.pending = false;
@@ -175,7 +184,7 @@ impl AlertEngine {
                 if state.active {
                     state.active = false;
                     state.pending = false;
-                    events.push(event(state, ts_secs, value, false));
+                    events.push(event(state, ts_secs, value, false, lang));
                 }
             }
         }
@@ -203,18 +212,29 @@ fn cooldown_elapsed(state: &RuleState, ts_secs: i64) -> bool {
         .is_none_or(|last| ts_secs - last >= i64::from(state.rule.cooldown_s))
 }
 
-fn event(state: &RuleState, ts_secs: i64, value: f64, active: bool) -> AlertEvent {
+fn event(state: &RuleState, ts_secs: i64, value: f64, active: bool, lang: Language) -> AlertEvent {
     let code = state.metric.code();
+    let label = state.metric.label(lang);
+    let value = format!("{value:.1}");
     let message = if active {
-        format!(
-            "{} {:.1} 超过阈值 {:.1}（持续 {} 秒）",
-            state.metric.label(),
-            value,
-            state.rule.threshold,
-            state.rule.duration_s
+        let threshold = format!("{:.1}", state.rule.threshold);
+        let duration = state.rule.duration_s.to_string();
+        trf(
+            lang,
+            "alert.above_threshold",
+            &[
+                ("label", label),
+                ("value", &value),
+                ("threshold", &threshold),
+                ("duration", &duration),
+            ],
         )
     } else {
-        format!("{} 已恢复（当前 {:.1}）", state.metric.label(), value)
+        trf(
+            lang,
+            "alert.recovered",
+            &[("label", label), ("value", &value)],
+        )
     };
     AlertEvent {
         level: if active {
@@ -254,7 +274,7 @@ pub fn in_quiet_hours(spec: &str, minute_of_day: u32) -> bool {
 }
 
 /// 通过会话总线发送桌面通知；无通知服务时返回错误由调用方记录 warning。
-pub fn send_desktop_notification(event: &AlertEvent) -> anyhow::Result<()> {
+pub fn send_desktop_notification(event: &AlertEvent, lang: Language) -> anyhow::Result<()> {
     if !event.active {
         return Ok(());
     }
@@ -274,7 +294,7 @@ pub fn send_desktop_notification(event: &AlertEvent) -> anyhow::Result<()> {
                 "TrafficView",
                 0u32,
                 "dialog-information",
-                "TrafficView 告警",
+                tr(lang, "notify.title"),
                 event.message.as_str(),
                 actions,
                 hints,
@@ -298,5 +318,31 @@ mod tests {
         assert!(in_quiet_hours("09:00-17:00", 12 * 60));
         assert!(!in_quiet_hours("09:00-17:00", 20 * 60));
         assert!(!in_quiet_hours("bad", 0));
+    }
+
+    #[test]
+    fn alert_messages_follow_language() {
+        let zh = trafficview_core::i18n::trf(
+            trafficview_core::i18n::Language::Zh,
+            "alert.above_threshold",
+            &[
+                ("label", "CPU 使用率"),
+                ("value", "95%"),
+                ("threshold", "90%"),
+                ("duration", "10"),
+            ],
+        );
+        assert!(zh.contains("超过阈值"));
+        let en = trafficview_core::i18n::trf(
+            trafficview_core::i18n::Language::En,
+            "alert.above_threshold",
+            &[
+                ("label", "CPU usage"),
+                ("value", "95%"),
+                ("threshold", "90%"),
+                ("duration", "10"),
+            ],
+        );
+        assert!(en.contains("above threshold"));
     }
 }
