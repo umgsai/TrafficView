@@ -6,4 +6,5 @@ pub mod mem;
 pub mod net;
 pub mod netlink;
 pub mod power;
+pub mod thermal;
 pub mod uptime;
