@@ -1,6 +1,6 @@
 //! GTK4/libadwaita 设置窗口。
 //!
-//! 六个页面：General / Network / Display / Alerts / History / Plugins & Advanced。
+//! 七个页面：General / Network / Display / Alerts / History / Plugins & Advanced / About。
 //! 无 daemon 时禁用全部编辑控件并在顶部横幅提示重连；所有保存走 D-Bus `UpdateConfig`，
 //! 绝不直接写 daemon 配置文件，也不提供自动提权/pkexec 按钮。
 
@@ -587,6 +587,49 @@ fn on_activate(app: &adw::Application) {
     advanced.add(&g_pt);
     advanced.add(&g_status);
     stack.add_titled(&page_scroll(&advanced), Some("advanced"), "插件与高级");
+
+    // ---- 关于：静态页面，展示图标、版本、功能介绍与项目链接 ----
+    let about = adw::PreferencesPage::new();
+    about.set_title("关于");
+    about.set_icon_name(Some("help-about-symbolic"));
+
+    let g_identity = adw::PreferencesGroup::new();
+    let identity = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    identity.set_halign(gtk::Align::Center);
+    identity.set_margin_top(18);
+    identity.set_margin_bottom(18);
+    let logo = gtk::Image::from_icon_name("trafficview");
+    logo.set_pixel_size(64);
+    let app_name = gtk::Label::new(Some("TrafficView"));
+    app_name.add_css_class("title-1");
+    let version = gtk::Label::new(Some(&format!("版本 {}", env!("CARGO_PKG_VERSION"))));
+    version.add_css_class("dim-label");
+    identity.append(&logo);
+    identity.append(&app_name);
+    identity.append(&version);
+    g_identity.add(&identity);
+    about.add(&g_identity);
+
+    let g_features = adw::PreferencesGroup::new();
+    g_features.set_title("功能介绍");
+    let features = gtk::Label::new(Some(
+        "Linux 桌面实时流量与系统负载监控。悬浮窗显示上下行速率、CPU、内存、GPU 及温度；\
+         支持托盘控制、SQLite 历史统计、阈值告警与 waybar 等多前端输出。\
+         所有数据由守护进程采集并经 D-Bus 分发。",
+    ));
+    features.set_wrap(true);
+    features.set_justify(gtk::Justification::Left);
+    g_features.add(&features);
+    about.add(&g_features);
+
+    let g_links = adw::PreferencesGroup::new();
+    g_links.set_title("项目链接");
+    let github =
+        gtk::LinkButton::with_label("https://github.com/umgsai/TrafficView", "GitHub 项目主页");
+    github.set_halign(gtk::Align::Start);
+    g_links.add(&github);
+    about.add(&g_links);
+    stack.add_titled(&page_scroll(&about), Some("about"), "关于");
 
     // ---- 可编辑控件清单：断连时统一禁用 ----
     let editable: Vec<gtk::Widget> = vec![
