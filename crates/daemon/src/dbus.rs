@@ -496,6 +496,9 @@ fn gpu_value(sample: &GpuSample) -> Value<'static> {
     if let Some(freq_mhz) = sample.freq_mhz {
         map.insert("freq_mhz".into(), Value::from(freq_mhz));
     }
+    if let Some(temp_celsius) = sample.temp_celsius {
+        map.insert("temp_celsius".into(), Value::from(f64::from(temp_celsius)));
+    }
     map.insert("stale".into(), Value::from(sample.stale));
     if let Some(observed_at_ms) = sample.observed_at_ms {
         map.insert("observed_at_ms".into(), Value::from(observed_at_ms));
@@ -764,13 +767,18 @@ fn gpu_from_dbus(dict: &HashMap<String, OwnedValue>) -> anyhow::Result<GpuSample
         .get("observed_at_ms")
         .map(|value| u64::try_from(value.try_clone()?))
         .transpose()?;
+    let temp_celsius = dict
+        .get("temp_celsius")
+        .map(|value| f64::try_from(value.try_clone()?))
+        .transpose()?
+        .map(|value| value as f32);
     Ok(GpuSample {
         name: string(dict, "name")?,
         util_pct: f64::try_from(required(dict, "util_pct")?.try_clone()?)? as f32,
         mem_used: u64::try_from(required(dict, "mem_used")?.try_clone()?)?,
         mem_total: u64::try_from(required(dict, "mem_total")?.try_clone()?)?,
         freq_mhz,
-        temp_celsius: None,
+        temp_celsius,
         stale,
         observed_at_ms,
     })
@@ -1312,6 +1320,50 @@ mod tests {
         let dict = snapshot_to_dbus(&snapshot);
         assert!(dict.contains_key("gpu"));
         assert!(dict.contains_key("gpus"));
+    }
+
+    #[test]
+    fn gpu_temp_celsius_roundtrip_and_omission() {
+        let mut snapshot = snapshot();
+        snapshot.gpu = Some(GpuSample {
+            name: "AMD GPU".into(),
+            util_pct: 12.0,
+            mem_used: 0,
+            mem_total: 0,
+            freq_mhz: None,
+            temp_celsius: Some(55.0),
+            stale: false,
+            observed_at_ms: None,
+        });
+        snapshot.gpus = vec![snapshot.gpu.clone().unwrap()];
+
+        let dict = snapshot_to_dbus(&snapshot);
+        let gpu: HashMap<String, OwnedValue> = dict
+            .get("gpu")
+            .unwrap()
+            .try_clone()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert!(gpu.contains_key("temp_celsius"));
+
+        let restored = snapshot_from_dbus(&dict).unwrap();
+        assert_eq!(restored.gpu.unwrap().temp_celsius, Some(55.0));
+        assert_eq!(restored.gpus[0].temp_celsius, Some(55.0));
+
+        snapshot.gpu.as_mut().unwrap().temp_celsius = None;
+        snapshot.gpus[0].temp_celsius = None;
+        let dict = snapshot_to_dbus(&snapshot);
+        let gpu: HashMap<String, OwnedValue> = dict
+            .get("gpu")
+            .unwrap()
+            .try_clone()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert!(!gpu.contains_key("temp_celsius"));
+        let restored = snapshot_from_dbus(&dict).unwrap();
+        assert_eq!(restored.gpu.unwrap().temp_celsius, None);
     }
 
     #[test]

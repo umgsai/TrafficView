@@ -73,6 +73,7 @@ plugin      a{ss}  插件指标（M1 为空）
 
 - 速率单位为字节/秒；`*_total` 为自网卡启动以来的累计字节数。
 - `cpu.total_pct`、`mem.used_pct`、`swap_pct`、`gpu.util_pct` 为 0–100 的百分比。
+- `gpu` / `gpus[]` 可选键 `temp_celsius`（`d`）：GPU 核心温度（摄氏度），无读数时省略。
 - 未采集的可选结构必须省略，不能用 `0` 假装已采集。
 - CLI `--json` 还原快照时将省略的可选结构表示为 `null`。
 
