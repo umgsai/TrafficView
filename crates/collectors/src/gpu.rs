@@ -32,6 +32,53 @@ pub fn read_amd_gpus(drm_root: &Path) -> Vec<GpuSample> {
         .collect()
 }
 
+/// 从 `card*/device/hwmon/hwmon*/` 读取 GPU 温度；优先 edge，其次 junction、mem。
+/// 非法读数、非有限值以及 -50–150°C 之外的值被丢弃。
+pub fn amd_temp_celsius(device: &Path) -> Option<f32> {
+    let mut readings: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
+    let Ok(hwmon_root) = fs::read_dir(device.join("hwmon")) else {
+        return None;
+    };
+    for hwmon in hwmon_root.flatten() {
+        let Ok(entries) = fs::read_dir(hwmon.path()) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let Some(index) = name
+                .strip_prefix("temp")
+                .and_then(|rest| rest.strip_suffix("_label"))
+            else {
+                continue;
+            };
+            let Some(label) = read_trimmed(&entry.path()) else {
+                continue;
+            };
+            let label = label.to_ascii_lowercase();
+            if !matches!(label.as_str(), "edge" | "junction" | "mem")
+                || readings.contains_key(&label)
+            {
+                continue;
+            }
+            let Some(raw) = read_trimmed(&hwmon.path().join(format!("temp{index}_input"))) else {
+                continue;
+            };
+            let Ok(millidegrees) = raw.parse::<i64>() else {
+                continue;
+            };
+            let celsius = millidegrees as f32 / 1000.0;
+            if !celsius.is_finite() || !(-50.0..=150.0).contains(&celsius) {
+                continue;
+            }
+            readings.insert(label, celsius);
+        }
+    }
+    ["edge", "junction", "mem"]
+        .iter()
+        .find_map(|label| readings.get(*label).copied())
+}
+
 fn amd_card(dir: &Path, index: usize) -> Option<GpuSample> {
     let device = dir.join("device");
     if read_trimmed(&device.join("vendor"))? != "0x1002" {
@@ -50,7 +97,7 @@ fn amd_card(dir: &Path, index: usize) -> Option<GpuSample> {
         mem_used: read_u64(&device.join("mem_info_vram_used")).unwrap_or(0),
         mem_total: read_u64(&device.join("mem_info_vram_total")).unwrap_or(0),
         freq_mhz: None,
-        temp_celsius: None,
+        temp_celsius: amd_temp_celsius(&device),
         stale: false,
         observed_at_ms: None,
     })
@@ -413,7 +460,7 @@ fn read_u64(path: &Path) -> Option<u64> {
 mod tests {
     use super::*;
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
 
     fn write(path: &Path, value: &str) {
@@ -429,6 +476,55 @@ mod tests {
         if let Some(busy) = busy {
             write(&device.join("gpu_busy_percent"), busy);
         }
+    }
+
+    fn amd_device(root: &Path) -> PathBuf {
+        let device = root.join("card0/device");
+        write(&device.join("vendor"), "0x1002\n");
+        write(&device.join("gpu_busy_percent"), "12\n");
+        device
+    }
+
+    #[test]
+    fn amd_temp_prefers_edge_and_converts_millidegrees() {
+        let dir = tempfile::tempdir().unwrap();
+        let device = amd_device(dir.path());
+        write(&device.join("hwmon/hwmon2/temp1_label"), "junction\n");
+        write(&device.join("hwmon/hwmon2/temp1_input"), "70000\n");
+        write(&device.join("hwmon/hwmon2/temp2_label"), "edge\n");
+        write(&device.join("hwmon/hwmon2/temp2_input"), "55000\n");
+
+        assert_eq!(amd_temp_celsius(&device), Some(55.0));
+    }
+
+    #[test]
+    fn amd_temp_falls_back_and_rejects_invalid_readings() {
+        let dir = tempfile::tempdir().unwrap();
+        let device = amd_device(dir.path());
+        // edge 越界被丢弃，回退 junction；label 不存在时回退 mem。
+        write(&device.join("hwmon/hwmon0/temp1_label"), "edge\n");
+        write(&device.join("hwmon/hwmon0/temp1_input"), "200000\n");
+        write(&device.join("hwmon/hwmon0/temp2_label"), "junction\n");
+        write(&device.join("hwmon/hwmon0/temp2_input"), "oops\n");
+        write(&device.join("hwmon/hwmon0/temp3_label"), "mem\n");
+        write(&device.join("hwmon/hwmon0/temp3_input"), "62000\n");
+        assert_eq!(amd_temp_celsius(&device), Some(62.0));
+
+        let dir = tempfile::tempdir().unwrap();
+        let device = amd_device(dir.path());
+        assert_eq!(amd_temp_celsius(&device), None);
+    }
+
+    #[test]
+    fn amd_card_carries_temperature() {
+        let dir = tempfile::tempdir().unwrap();
+        let device = amd_device(dir.path());
+        write(&device.join("hwmon/hwmon0/temp1_label"), "edge\n");
+        write(&device.join("hwmon/hwmon0/temp1_input"), "55000\n");
+
+        let gpu = super::amd_card(&dir.path().join("card0"), 0).unwrap();
+        assert_eq!(gpu.temp_celsius, Some(55.0));
+        assert_eq!(gpu.util_pct, 12.0);
     }
 
     #[test]
