@@ -89,7 +89,14 @@ sudo apt remove trafficview
 
 卸载会保留个人数据：`~/.config/trafficview/config.toml`（配置，含自定义显示样式）
 和 `~/.local/share/trafficview`（历史统计，如存在）。保留配置后，重装即可恢复原来的
-显示样式；确认不再需要时可手动删除这两个目录。
+显示样式；确认不再需要时可一并删除：
+
+```bash
+# 删除配置文件（自定义显示样式、主题、语言等都会丢失，重装后回到默认样式）
+rm -rf ~/.config/trafficview
+# 删除历史统计数据（SQLite 数据库，删除后不可恢复）
+rm -rf ~/.local/share/trafficview
+```
 
 只用源码运行：
 
