@@ -153,6 +153,9 @@ pub struct Snapshot {
     /// 全部可用 GPU；未检测到后端时为空。
     #[serde(default)]
     pub gpus: Vec<GpuSample>,
+    /// CPU 温度（摄氏度）；无可用传感器时为 `None`。
+    #[serde(default)]
+    pub cpu_temp: Option<f32>,
     pub temps: Vec<TempSample>,
     /// 挂载点容量；未采集时为 `None`。
     #[serde(default)]
@@ -178,6 +181,7 @@ impl Snapshot {
             disk: None,
             gpu: None,
             gpus: Vec::new(),
+            cpu_temp: None,
             temps: Vec::new(),
             filesystems: None,
             battery: None,
@@ -225,5 +229,6 @@ mod tests {
         assert!(snapshot.uptime_s.is_none());
         assert!(snapshot.processes.is_none());
         assert!(snapshot.plugin.is_empty());
+        assert_eq!(snapshot.cpu_temp, None);
     }
 }

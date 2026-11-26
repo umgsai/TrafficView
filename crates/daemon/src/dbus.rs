@@ -714,6 +714,7 @@ pub fn snapshot_from_dbus(dict: &HashMap<String, OwnedValue>) -> anyhow::Result<
         disk,
         gpu,
         gpus,
+        cpu_temp: None,
         temps,
         filesystems,
         battery,

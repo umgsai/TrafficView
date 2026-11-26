@@ -35,6 +35,7 @@ fn fixture() -> Snapshot {
         disk: None,
         gpu: None,
         gpus: Vec::new(),
+        cpu_temp: None,
         temps: Vec::new(),
         filesystems: None,
         battery: None,

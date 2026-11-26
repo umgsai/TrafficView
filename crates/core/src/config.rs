@@ -196,6 +196,9 @@ pub struct OverlayConfig {
     /// 原生皮肤目录；空字符串使用内置固定布局。
     pub skin: String,
     pub units: RateUnit,
+    /// CPU 温度传感器 label；空字符串按内置规则自动识别。
+    #[serde(default)]
+    pub cpu_temp_sensor: String,
     pub items: Vec<DisplayItem>,
 }
 
@@ -237,6 +240,7 @@ impl Default for OverlayConfig {
             show_in_taskbar: false,
             skin: String::new(),
             units: RateUnit::Bytes,
+            cpu_temp_sensor: String::new(),
             items: default_items(),
         }
     }
@@ -287,6 +291,14 @@ fn default_items() -> Vec<DisplayItem> {
             unit: "%".into(),
             format: "{value}".into(),
             color: "#FFA8A8".into(),
+            visible: true,
+        },
+        DisplayItem {
+            id: "cpu_temp".into(),
+            label: "TEMP".into(),
+            unit: "°C".into(),
+            format: "{value}".into(),
+            color: "#FFA94D".into(),
             visible: true,
         },
     ]
@@ -609,7 +621,25 @@ mod tests {
                 .iter()
                 .map(|i| i.id.as_str())
                 .collect::<Vec<_>>(),
-            ["net_up", "net_down", "cpu", "mem"]
+            ["net_up", "net_down", "cpu", "mem", "cpu_temp"]
         );
+    }
+
+    #[test]
+    fn overlay_defaults_to_automatic_cpu_sensor() {
+        let cfg = Config::default();
+        assert_eq!(cfg.overlay.cpu_temp_sensor, "");
+        assert!(cfg.overlay.items.iter().any(|item| item.id == "cpu_temp"));
+    }
+
+    #[test]
+    fn legacy_overlay_config_without_cpu_sensor_still_loads() {
+        let text = r#"
+            [overlay]
+            opacity = 0.7
+        "#;
+        let cfg: Config = toml::from_str(text).unwrap();
+        assert_eq!(cfg.overlay.cpu_temp_sensor, "");
+        assert!(cfg.overlay.items.iter().any(|item| item.id == "cpu_temp"));
     }
 }
