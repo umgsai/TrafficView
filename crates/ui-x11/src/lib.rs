@@ -398,20 +398,18 @@ impl WindowContext {
             ),
         };
         let always_on_top = config.overlay.always_on_top;
-        let overlay_size = (
-            trafficview_render::layout(&config.overlay.items, &empty_snapshot(), 96).width,
-            trafficview_render::layout(&config.overlay.items, &empty_snapshot(), 96).height,
-        );
+        let overlay_size = {
+            let layout = trafficview_render::layout(&config.overlay.items, &sizing_snapshot(), 96);
+            (layout.width, layout.height)
+        };
         let position = resolve_position(
             config.overlay.position_preset,
             config.overlay.position,
             overlay_size,
             (screen.width_in_pixels, screen.height_in_pixels),
         );
-        let width =
-            trafficview_render::layout(&config.overlay.items, &empty_snapshot(), 96).width as u16;
-        let height =
-            trafficview_render::layout(&config.overlay.items, &empty_snapshot(), 96).height as u16;
+        let width = overlay_size.0 as u16;
+        let height = overlay_size.1 as u16;
         // overlay 永远是悬浮窗（override_redirect + DOCK 类型），
         // 不受 show_in_taskbar 影响——后者只控制 tray 图标旁是否显示实时指标。
         let aux = CreateWindowAux::new()
@@ -810,6 +808,13 @@ fn empty_snapshot() -> Snapshot {
     )
 }
 
+/// 估算初始窗口尺寸时假定可选显示项已有读数，避免首帧高度跳变。
+fn sizing_snapshot() -> Snapshot {
+    let mut snapshot = empty_snapshot();
+    snapshot.cpu_temp = Some(0.0);
+    snapshot
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -830,5 +835,14 @@ mod tests {
         let hidpi = trafficview_render::layout(&items, &empty_snapshot(), 144);
         assert_eq!(hidpi.width, base.width * 3 / 2);
         assert_eq!(hidpi.height, base.height * 3 / 2);
+    }
+
+    #[test]
+    fn initial_sizing_accounts_for_optional_items() {
+        let items = Config::default().overlay.items;
+        let empty = trafficview_render::layout(&items, &empty_snapshot(), 96);
+        let sizing = trafficview_render::layout(&items, &sizing_snapshot(), 96);
+        assert_eq!(sizing.items.len(), 5);
+        assert!(sizing.height > empty.height);
     }
 }

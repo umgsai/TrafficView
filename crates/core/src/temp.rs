@@ -2,7 +2,8 @@ use crate::TempSample;
 
 /// 选出代表 CPU 的温度。`sensor` 非空时先按 label 精确匹配（忽略大小写），再按子串匹配，
 /// 未命中回退内置规则。子串匹配取 `temps` 中首个包含覆盖值的项，顺序由采集层按 label 排序决定；
-/// 因此只写 chip 名（如 `k10temp`）通常命中 `Tctl`，建议写完整 label（如 `k10temp/Tdie`）。
+/// 因此只写 chip 名（如 `k10temp`）会按 label 排序命中第一个包含该子串的项
+/// （可能是 `Tccd1`、`Tctl` 等），建议写完整 label（如 `k10temp/Tdie`）。
 pub fn cpu_temperature(temps: &[TempSample], sensor: Option<&str>) -> Option<f32> {
     if let Some(wanted) = sensor.map(str::trim).filter(|value| !value.is_empty()) {
         if let Some(temp) = temps
