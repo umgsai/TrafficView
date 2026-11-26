@@ -72,6 +72,25 @@ sudo dpkg -i dist/trafficview_1.1.1-1_amd64.deb
 也可以 `systemctl --user enable --now trafficviewd` 把 daemon 交给 systemd 托管。
 发行说明见 [docs/releases/1.1.1.md](docs/releases/1.1.1.md)。
 
+### 卸载
+
+先停止运行中的程序，再卸载软件包：
+
+```bash
+pkill -f '/usr/bin/trafficview-settings'
+pkill -f '/usr/bin/trafficview tray'
+pkill -f '/usr/bin/trafficview overlay'
+systemctl --user disable --now trafficviewd 2>/dev/null
+pkill -x trafficviewd
+sudo apt remove trafficview
+```
+
+如需连 `/etc` 下的包级配置一起清除，把最后一行换成 `sudo apt purge trafficview`。
+
+卸载会保留个人数据：`~/.config/trafficview/config.toml`（配置，含自定义显示样式）
+和 `~/.local/share/trafficview`（历史统计，如存在）。保留配置后，重装即可恢复原来的
+显示样式；确认不再需要时可手动删除这两个目录。
+
 只用源码运行：
 
 ```bash
