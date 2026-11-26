@@ -144,7 +144,7 @@ interfaces   av   [{stable s, name s, rx t, tx t}]
 ### 配置新增
 
 ```toml
-theme = "auto"                 # auto | light | dark
+theme = "dark"                 # auto | light | dark（默认 dark）
 network_smoothing = "none"     # none | moving_average_3 | ema
 interface_whitelist = []       # 优先于默认路由
 [history]

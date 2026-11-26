@@ -74,7 +74,7 @@ impl Default for UiConfig {
             ],
             interface_whitelist: Vec::new(),
             network_smoothing: "none".into(),
-            theme: "auto".into(),
+            theme: "dark".into(),
             history_retention_days: 90,
             history_timezone: String::new(),
             overlay_visible: true,
@@ -496,7 +496,7 @@ mod tests {
         let parsed = from_dbus(&dict);
         assert_eq!(parsed.sample_interval_ms, 1000);
         // 其余字段仍正确。
-        assert_eq!(parsed.theme, "auto");
+        assert_eq!(parsed.theme, "dark");
     }
 
     #[test]

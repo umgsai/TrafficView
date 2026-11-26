@@ -50,13 +50,13 @@ pub enum NetworkSmoothing {
     Ema,
 }
 
-/// 深色/浅色主题选择。
+/// 深色/浅色主题选择；默认深色。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemeMode {
-    #[default]
     Auto,
     Light,
+    #[default]
     Dark,
 }
 
@@ -218,7 +218,7 @@ impl Default for Config {
             ],
             interface_whitelist: Vec::new(),
             network_smoothing: NetworkSmoothing::None,
-            theme: ThemeMode::Auto,
+            theme: ThemeMode::Dark,
             history: HistoryConfig::default(),
             alerts: AlertsConfig::default(),
             overlay: OverlayConfig::default(),

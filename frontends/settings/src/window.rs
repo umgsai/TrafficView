@@ -247,7 +247,7 @@ impl AppState {
         cfg.network_smoothing = combo_selected(&self.smoothing).unwrap_or_else(|| "none".into());
         cfg.memory_include_cache = self.memory_include_cache.is_active();
 
-        cfg.theme = combo_selected(&self.theme).unwrap_or_else(|| "auto".into());
+        cfg.theme = combo_selected(&self.theme).unwrap_or_else(|| "dark".into());
         cfg.overlay_visible = self.overlay_visible.is_active();
         cfg.overlay_opacity = self.overlay_opacity.value();
         cfg.overlay_units = combo_selected(&self.overlay_units).unwrap_or_else(|| "bytes".into());

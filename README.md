@@ -191,7 +191,7 @@ $ trafficview config path
 | `active_interface` | 指定网卡名；留空表示按黑白名单自动选择 |
 | `interface_blacklist` / `interface_whitelist` | 自动选择时的网卡过滤规则，支持通配符 |
 | `network_smoothing` | `none` / `moving_average_3` / `ema` |
-| `theme` | `auto` / `light` / `dark` |
+| `theme` | `auto` / `light` / `dark`，默认 `dark` |
 | `[history] retention_days` / `timezone` | 历史保留天数与时区 |
 | `[alerts] rules` | 告警规则：指标、比较符、阈值、持续时间、冷却、静默时段、级别 |
 | `overlay.cpu_temp_sensor` | CPU 温度传感器 label；留空自动识别，例如 `k10temp/Tdie` |
