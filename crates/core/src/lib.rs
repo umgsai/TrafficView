@@ -99,6 +99,9 @@ pub struct GpuSample {
     /// Intel 等后端可报告频率；未知时省略。
     #[serde(default)]
     pub freq_mhz: Option<u32>,
+    /// GPU 核心温度（摄氏度）；后端拿不到时为 `None`。
+    #[serde(default)]
+    pub temp_celsius: Option<f32>,
     /// 中间帧沿用上一读数时为 `true`，避免把旧值当成新采样。
     #[serde(default)]
     pub stale: bool,
@@ -230,5 +233,19 @@ mod tests {
         assert!(snapshot.processes.is_none());
         assert!(snapshot.plugin.is_empty());
         assert_eq!(snapshot.cpu_temp, None);
+    }
+
+    #[test]
+    fn gpu_sample_without_temp_field_deserializes_to_none() {
+        let json = r#"{"name":"AMD GPU","util_pct":12.0,"mem_used":0,"mem_total":0}"#;
+        let gpu: GpuSample = serde_json::from_str(json).unwrap();
+        assert_eq!(gpu.temp_celsius, None);
+
+        let gpu = GpuSample {
+            temp_celsius: Some(55.0),
+            ..gpu
+        };
+        let text = serde_json::to_string(&gpu).unwrap();
+        assert!(text.contains("temp_celsius"));
     }
 }

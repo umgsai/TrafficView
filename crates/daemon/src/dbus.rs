@@ -770,6 +770,7 @@ fn gpu_from_dbus(dict: &HashMap<String, OwnedValue>) -> anyhow::Result<GpuSample
         mem_used: u64::try_from(required(dict, "mem_used")?.try_clone()?)?,
         mem_total: u64::try_from(required(dict, "mem_total")?.try_clone()?)?,
         freq_mhz,
+        temp_celsius: None,
         stale,
         observed_at_ms,
     })
@@ -1302,6 +1303,7 @@ mod tests {
             mem_used: 0,
             mem_total: 0,
             freq_mhz: Some(900),
+            temp_celsius: None,
             stale: true,
             observed_at_ms: Some(42),
         };

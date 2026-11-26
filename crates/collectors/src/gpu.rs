@@ -50,6 +50,7 @@ fn amd_card(dir: &Path, index: usize) -> Option<GpuSample> {
         mem_used: read_u64(&device.join("mem_info_vram_used")).unwrap_or(0),
         mem_total: read_u64(&device.join("mem_info_vram_total")).unwrap_or(0),
         freq_mhz: None,
+        temp_celsius: None,
         stale: false,
         observed_at_ms: None,
     })
@@ -76,6 +77,7 @@ pub fn parse_nvidia_smi(input: &str) -> Vec<GpuSample> {
                 // 该查询不包含 memory.total；未采集时保留 0 并依赖 CollectorStatus 解释。
                 mem_total: 0,
                 freq_mhz: None,
+                temp_celsius: None,
                 stale: false,
                 observed_at_ms: None,
             })
@@ -211,6 +213,7 @@ unsafe fn read_nvml_gpus() -> Result<Vec<GpuSample>, String> {
                     mem_used,
                     mem_total,
                     freq_mhz: None,
+                    temp_celsius: None,
                     stale: false,
                     observed_at_ms: None,
                 });
@@ -311,6 +314,7 @@ impl IntelScanner {
                         mem_used: 0,
                         mem_total: 0,
                         freq_mhz: None,
+                        temp_celsius: None,
                         stale: false,
                         observed_at_ms: Some(observed_at_ms),
                     });
