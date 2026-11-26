@@ -629,17 +629,67 @@ mod tests {
     fn overlay_defaults_to_automatic_cpu_sensor() {
         let cfg = Config::default();
         assert_eq!(cfg.overlay.cpu_temp_sensor, "");
-        assert!(cfg.overlay.items.iter().any(|item| item.id == "cpu_temp"));
+        let item = cfg
+            .overlay
+            .items
+            .iter()
+            .find(|item| item.id == "cpu_temp")
+            .expect("default cpu_temp item");
+        assert_eq!(
+            item,
+            &DisplayItem {
+                id: "cpu_temp".into(),
+                label: "TEMP".into(),
+                unit: "°C".into(),
+                format: "{value}".into(),
+                color: "#FFA94D".into(),
+                visible: true,
+            }
+        );
     }
 
     #[test]
     fn legacy_overlay_config_without_cpu_sensor_still_loads() {
-        let text = r#"
+        // 旧版完整 4 项 overlay：缺少 cpu_temp_sensor 字段与 cpu_temp 数组项。
+        let text = r##"
             [overlay]
             opacity = 0.7
-        "#;
+
+            [[overlay.items]]
+            id = "net_up"
+            label = "↑"
+            unit = "B/s"
+            format = "{value}"
+            color = "#7FD1FF"
+            visible = true
+
+            [[overlay.items]]
+            id = "net_down"
+            label = "↓"
+            unit = "B/s"
+            format = "{value}"
+            color = "#8CE99A"
+            visible = true
+
+            [[overlay.items]]
+            id = "cpu"
+            label = "CPU"
+            unit = "%"
+            format = "{value}"
+            color = "#FFD43B"
+            visible = true
+
+            [[overlay.items]]
+            id = "mem"
+            label = "MEM"
+            unit = "%"
+            format = "{value}"
+            color = "#FFA8A8"
+            visible = true
+        "##;
         let cfg: Config = toml::from_str(text).unwrap();
         assert_eq!(cfg.overlay.cpu_temp_sensor, "");
-        assert!(cfg.overlay.items.iter().any(|item| item.id == "cpu_temp"));
+        assert_eq!(cfg.overlay.items.len(), 4);
+        assert!(!cfg.overlay.items.iter().any(|item| item.id == "cpu_temp"));
     }
 }
