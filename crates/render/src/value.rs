@@ -9,13 +9,18 @@ use trafficview_core::{
     Snapshot,
 };
 
-pub const BUILTIN_IDS: [&str; 4] = ["net_up", "net_down", "cpu", "mem"];
+pub const BUILTIN_IDS: [&str; 5] = ["net_up", "net_down", "cpu", "mem", "cpu_temp"];
 
 pub fn is_known_id(id: &str) -> bool {
     BUILTIN_IDS.contains(&id)
         || id
             .strip_prefix("plugin.")
             .is_some_and(|rest| !rest.trim().is_empty())
+}
+
+/// 显示项当前是否有可绘制数据；`cpu_temp` 无读数时整行隐藏。
+pub fn is_available(id: &str, snapshot: &Snapshot) -> bool {
+    id != "cpu_temp" || snapshot.cpu_temp.is_some()
 }
 
 /// 阈值比较使用的数值。速率始终以字节/秒参与阈值判断。
@@ -25,6 +30,7 @@ pub fn numeric_value(id: &str, snapshot: &Snapshot) -> Option<f64> {
         "net_down" => Some(snapshot.net.rx_bps as f64),
         "cpu" => Some(f64::from(snapshot.cpu.total_pct)),
         "mem" => Some(f64::from(snapshot.mem.used_pct)),
+        "cpu_temp" => snapshot.cpu_temp.map(f64::from),
         other => other
             .strip_prefix("plugin.")
             .and_then(|key| snapshot.plugin.get(key))
@@ -44,6 +50,7 @@ pub fn display_value(id: &str, snapshot: &Snapshot, units: RateUnit, format: &st
         "net_up" => format_rate_with_units(snapshot.net.tx_bps, units),
         "net_down" => format_rate_with_units(snapshot.net.rx_bps, units),
         "cpu" | "mem" => format!("{value:.1}%"),
+        "cpu_temp" => format!("{value:.0}°C"),
         _ => format!("{value:.1}"),
     };
     let template = if format.trim().is_empty() {

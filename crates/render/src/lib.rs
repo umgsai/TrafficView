@@ -20,7 +20,7 @@ use trafficview_core::{
 };
 
 pub use skin::{Skin, SkinError};
-pub use value::{display_value, is_known_id, numeric_value};
+pub use value::{display_value, is_available, is_known_id, numeric_value};
 
 pub const BASE_DPI: u32 = 96;
 const ROW_HEIGHT: f32 = 22.0;
@@ -307,6 +307,9 @@ impl Renderer {
         let mut guard = context().lock().expect("render context poisoned");
         let context = &mut *guard;
         for item in &self.skin.items {
+            if !value::is_available(&item.id, snapshot) {
+                continue;
+            }
             let [x, y, item_width, item_height] = item.rect;
             let x = ((x as f32) * scale).round() as i32;
             let y = ((y as f32) * scale).round() as i32;
@@ -491,7 +494,10 @@ pub fn layout(items: &[DisplayItem], snapshot: &Snapshot, dpi: u32) -> Layout {
     let gap = GAP * scale;
     let col_width = (width - padding * 2.0 - gap) / 2.0;
 
-    let visible_items: Vec<&DisplayItem> = items.iter().filter(|i| i.visible).collect();
+    let visible_items: Vec<&DisplayItem> = items
+        .iter()
+        .filter(|item| item.visible && value::is_available(&item.id, snapshot))
+        .collect();
     let num_rows = (visible_items.len() as f32 / 2.0).ceil() as usize;
 
     let mut layout_items = Vec::new();
@@ -532,6 +538,10 @@ pub fn value_text(id: &str, snapshot: &Snapshot) -> String {
         "net_down" => format_rate(snapshot.net.rx_bps),
         "cpu" => format!("{:.0}%", snapshot.cpu.total_pct),
         "mem" => format!("{:.0}%", snapshot.mem.used_pct),
+        "cpu_temp" => snapshot
+            .cpu_temp
+            .map(|celsius| format!("{celsius:.0}°C"))
+            .unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -1123,6 +1133,40 @@ mod tests {
         let frame = render(&empty, &config, 96);
         assert!(frame.width > 0 && frame.height > 0);
         assert_eq!(frame.argb.len(), (frame.width * frame.height * 4) as usize);
+    }
+
+    #[test]
+    fn cpu_temp_item_is_hidden_until_a_reading_exists() {
+        let items = Config::default().overlay.items;
+        let mut snapshot = snapshot();
+
+        let without = layout(&items, &snapshot, 96);
+        assert!(!without.items.iter().any(|item| item.id == "cpu_temp"));
+
+        snapshot.cpu_temp = Some(66.4);
+        let with = layout(&items, &snapshot, 96);
+        let item = with
+            .items
+            .iter()
+            .find(|item| item.id == "cpu_temp")
+            .expect("cpu_temp item");
+        assert_eq!(item.text, "TEMP 66°C");
+        assert!(with.height > without.height);
+    }
+
+    #[test]
+    fn cpu_temp_display_value_uses_integer_celsius() {
+        let mut snapshot = snapshot();
+        snapshot.cpu_temp = Some(66.4);
+        assert_eq!(
+            display_value(
+                "cpu_temp",
+                &snapshot,
+                trafficview_core::config::RateUnit::Bytes,
+                "{value}"
+            ),
+            "66°C"
+        );
     }
 
     #[test]
