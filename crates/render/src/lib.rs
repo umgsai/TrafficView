@@ -504,7 +504,7 @@ pub fn layout(items: &[DisplayItem], snapshot: &Snapshot, dpi: u32) -> Layout {
     for (index, item) in visible_items.iter().enumerate() {
         let col = index % 2;
         let row = index / 2;
-        let value = value_text(&item.id, snapshot);
+        let value = item_value_text(item, snapshot);
         let text = if item.label.is_empty() {
             value
         } else {
@@ -544,6 +544,13 @@ pub fn value_text(id: &str, snapshot: &Snapshot) -> String {
             .unwrap_or_default(),
         _ => String::new(),
     }
+}
+
+/// 显示项参与布局与缓存键的值文本；`format` 含 `{cpu_temp}` 时把温度内联进来。
+/// 缓存键同样走这里，保证独立温度项被隐藏/删除后，温度变化仍会触发重绘。
+fn item_value_text(item: &DisplayItem, snapshot: &Snapshot) -> String {
+    let value = value_text(&item.id, snapshot);
+    value::expand_cpu_temp_template(&item.format, &value, snapshot).unwrap_or(value)
 }
 
 struct RenderContext {
@@ -710,7 +717,7 @@ fn cache_key(
     for item in &config.overlay.items {
         key.push_str(&item.id);
         key.push('=');
-        key.push_str(&value_text(&item.id, snapshot));
+        key.push_str(&item_value_text(item, snapshot));
         key.push(',');
     }
     key.push_str(&alerts.cache_key());
@@ -1166,6 +1173,93 @@ mod tests {
                 "{value}"
             ),
             "66°C"
+        );
+    }
+
+    #[test]
+    fn cpu_item_can_inline_cpu_temp_in_builtin_layout() {
+        let mut items = Config::default().overlay.items;
+        items
+            .iter_mut()
+            .find(|item| item.id == "cpu")
+            .unwrap()
+            .format = "{value} {cpu_temp}".into();
+        items
+            .iter_mut()
+            .find(|item| item.id == "cpu_temp")
+            .unwrap()
+            .visible = false;
+
+        let mut snapshot = snapshot();
+        snapshot.cpu.total_pct = 14.0;
+
+        let without_temp = layout(&items, &snapshot, 96);
+        assert_eq!(without_temp.items.len(), 4);
+        let cpu = without_temp
+            .items
+            .iter()
+            .find(|item| item.id == "cpu")
+            .unwrap();
+        assert_eq!(cpu.text, "CPU 14%");
+
+        snapshot.cpu_temp = Some(70.4);
+        let with_temp = layout(&items, &snapshot, 96);
+        assert_eq!(with_temp.items.len(), 4);
+        let cpu = with_temp
+            .items
+            .iter()
+            .find(|item| item.id == "cpu")
+            .unwrap();
+        assert_eq!(cpu.text, "CPU 14% 70°C");
+        assert_eq!(with_temp.height, without_temp.height);
+    }
+
+    #[test]
+    fn display_value_supports_cpu_temp_placeholder() {
+        let mut snapshot = snapshot();
+        snapshot.cpu.total_pct = 14.0;
+        snapshot.cpu_temp = Some(70.4);
+        assert_eq!(
+            display_value(
+                "cpu",
+                &snapshot,
+                trafficview_core::config::RateUnit::Bytes,
+                "{value} {cpu_temp}"
+            ),
+            "14.0% 70°C"
+        );
+
+        snapshot.cpu_temp = None;
+        assert_eq!(
+            display_value(
+                "cpu",
+                &snapshot,
+                trafficview_core::config::RateUnit::Bytes,
+                "{value} {cpu_temp}"
+            ),
+            "14.0%"
+        );
+
+        // 有温度读数时保留模板里的多个空格；无读数时压缩空白。
+        snapshot.cpu_temp = Some(70.4);
+        assert_eq!(
+            display_value(
+                "cpu",
+                &snapshot,
+                trafficview_core::config::RateUnit::Bytes,
+                "{value}  {cpu_temp}"
+            ),
+            "14.0%  70°C"
+        );
+        snapshot.cpu_temp = None;
+        assert_eq!(
+            display_value(
+                "cpu",
+                &snapshot,
+                trafficview_core::config::RateUnit::Bytes,
+                "{value}  {cpu_temp}"
+            ),
+            "14.0%"
         );
     }
 

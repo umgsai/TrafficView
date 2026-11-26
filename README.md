@@ -197,6 +197,10 @@ visible = true
 `cpu_temp_sensor = "..."`。只写 chip 名（如 `k10temp`）会按 label 排序命中第一个匹配项，
 建议写完整 label（如 `k10temp/Tdie`）。
 
+若希望温度跟在 CPU 后面同一项显示（`CPU 14% 70°C`），把 `cpu` 项的 `format` 改为
+`"{value} {cpu_temp}"`，并把独立 `cpu_temp` 项设为 `visible = false`；无温度读数时自动
+退化为只显示 CPU 百分比。
+
 自启动：
 
 ```console

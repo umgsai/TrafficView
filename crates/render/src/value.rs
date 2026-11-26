@@ -39,7 +39,8 @@ pub fn numeric_value(id: &str, snapshot: &Snapshot) -> Option<f64> {
     }
 }
 
-/// 格式化后的显示文本。模板中只有 `{value}` 会被替换。
+/// 格式化后的显示文本。模板中 `{value}` 会被替换为本项数值；
+/// 额外支持 `{cpu_temp}` 占位符，把 CPU 温度内联到其它显示项。
 ///
 /// 调用方应先通过 [`is_available`] 判断该项当前是否有可绘制数据；例如
 /// `cpu_temp` 无读数时应整行隐藏，而不是绘制这里返回的 `--`。
@@ -62,7 +63,31 @@ pub fn display_value(id: &str, snapshot: &Snapshot, units: RateUnit, format: &st
     } else {
         format
     };
+    if let Some(expanded) = expand_cpu_temp_template(template, &text, snapshot) {
+        return expanded;
+    }
     template.replace("{value}", &text)
+}
+
+/// 模板包含 `{cpu_temp}` 时，按模板拼接本项数值与 CPU 温度，用于
+/// “CPU 14%  70°C”这类内联显示；有温度读数时原样保留模板中的空白。
+/// 无温度读数时温度段为空，此时压缩空白避免留下多余间距。
+/// 模板不含 `{cpu_temp}` 时返回 `None`，调用方保持原有 `{value}` 替换逻辑。
+pub fn expand_cpu_temp_template(format: &str, value: &str, snapshot: &Snapshot) -> Option<String> {
+    if !format.contains("{cpu_temp}") {
+        return None;
+    }
+    let temp = snapshot
+        .cpu_temp
+        .map(|celsius| format!("{celsius:.0}°C"))
+        .unwrap_or_default();
+    let expanded = format
+        .replace("{value}", value)
+        .replace("{cpu_temp}", &temp);
+    if snapshot.cpu_temp.is_some() {
+        return Some(expanded);
+    }
+    Some(expanded.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 fn format_rate_with_units(bytes_per_sec: u64, units: RateUnit) -> String {
