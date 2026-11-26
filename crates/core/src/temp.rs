@@ -65,10 +65,7 @@ mod tests {
         ];
         assert_eq!(cpu_temperature(&intel, None), Some(55.0));
 
-        let amd = vec![
-            temp("k10temp/Tctl", 66.0),
-            temp("k10temp/Tdie", 62.0),
-        ];
+        let amd = vec![temp("k10temp/Tctl", 66.0), temp("k10temp/Tdie", 62.0)];
         assert_eq!(cpu_temperature(&amd, None), Some(62.0));
 
         let tctl_only = vec![temp("k10temp/Tctl", 66.0)];
@@ -89,10 +86,7 @@ mod tests {
 
     #[test]
     fn override_wins_and_falls_back_when_missing() {
-        let temps = vec![
-            temp("nvme/Composite", 40.0),
-            temp("k10temp/Tctl", 66.0),
-        ];
+        let temps = vec![temp("nvme/Composite", 40.0), temp("k10temp/Tctl", 66.0)];
         assert_eq!(cpu_temperature(&temps, Some("nvme/Composite")), Some(40.0));
         assert_eq!(cpu_temperature(&temps, Some("NVME")), Some(40.0));
         assert_eq!(cpu_temperature(&temps, Some("missing")), Some(66.0));
