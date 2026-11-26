@@ -1408,8 +1408,10 @@ mod tests {
 
     #[test]
     fn language_roundtrip_through_dbus() {
-        let mut config = Config::default();
-        config.language = "zh".into();
+        let config = Config {
+            language: "zh".into(),
+            ..Config::default()
+        };
         let dict = config_to_dbus(&config);
         assert!(dict.contains_key("language"));
         let mut updated = Config::default();

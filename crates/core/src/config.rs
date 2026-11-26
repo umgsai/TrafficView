@@ -592,8 +592,10 @@ mod tests {
     #[test]
     fn language_defaults_to_auto_and_validates() {
         assert_eq!(Config::default().language, "auto");
-        let mut cfg = Config::default();
-        cfg.language = "zh".into();
+        let mut cfg = Config {
+            language: "zh".into(),
+            ..Config::default()
+        };
         assert!(cfg.validate().is_ok());
         cfg.language = "fr".into();
         assert!(cfg.validate().is_err());

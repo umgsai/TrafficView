@@ -145,6 +145,7 @@ interfaces   av   [{stable s, name s, rx t, tx t}]
 
 ```toml
 theme = "dark"                 # auto | light | dark（默认 dark）
+language = "auto"              # auto | zh | en（默认 auto，跟随 LC_ALL/LANG）
 network_smoothing = "none"     # none | moving_average_3 | ema
 interface_whitelist = []       # 优先于默认路由
 [history]

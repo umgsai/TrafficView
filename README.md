@@ -211,6 +211,7 @@ $ trafficview config path
 | `interface_blacklist` / `interface_whitelist` | 自动选择时的网卡过滤规则，支持通配符 |
 | `network_smoothing` | `none` / `moving_average_3` / `ema` |
 | `theme` | `auto` / `light` / `dark`，默认 `dark` |
+| `language` | 界面语言：`auto`（默认，跟随系统）/ `zh` / `en`；覆盖设置界面、托盘与通知。设置界面切换语言后需重新打开窗口，托盘与通知立即生效 |
 | `[history] retention_days` / `timezone` | 历史保留天数与时区 |
 | `[alerts] rules` | 告警规则：指标、比较符、阈值、持续时间、冷却、静默时段、级别 |
 | `overlay.cpu_temp_sensor` | CPU 温度传感器 label；留空自动识别，例如 `k10temp/Tdie` |
