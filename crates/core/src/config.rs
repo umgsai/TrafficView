@@ -301,6 +301,14 @@ fn default_items() -> Vec<DisplayItem> {
             color: "#FFA94D".into(),
             visible: true,
         },
+        DisplayItem {
+            id: "gpu".into(),
+            label: "GPU".into(),
+            unit: "%".into(),
+            format: "{value} {gpu_temp}".into(),
+            color: "#B197FC".into(),
+            visible: true,
+        },
     ]
 }
 
@@ -621,7 +629,7 @@ mod tests {
                 .iter()
                 .map(|i| i.id.as_str())
                 .collect::<Vec<_>>(),
-            ["net_up", "net_down", "cpu", "mem", "cpu_temp"]
+            ["net_up", "net_down", "cpu", "mem", "cpu_temp", "gpu"]
         );
     }
 

@@ -542,15 +542,26 @@ pub fn value_text(id: &str, snapshot: &Snapshot) -> String {
             .cpu_temp
             .map(|celsius| format!("{celsius:.0}°C"))
             .unwrap_or_default(),
+        "gpu" => snapshot
+            .gpu
+            .as_ref()
+            .map(|gpu| format!("{:.0}%", gpu.util_pct))
+            .unwrap_or_default(),
+        "gpu_temp" => snapshot
+            .gpu
+            .as_ref()
+            .and_then(|gpu| gpu.temp_celsius)
+            .map(|celsius| format!("{celsius:.0}°C"))
+            .unwrap_or_default(),
         _ => String::new(),
     }
 }
 
-/// 显示项参与布局与缓存键的值文本；`format` 含 `{cpu_temp}` 时把温度内联进来。
+/// 显示项参与布局与缓存键的值文本；`format` 含 `{cpu_temp}`/`{gpu_temp}` 时把温度内联进来。
 /// 缓存键同样走这里，保证独立温度项被隐藏/删除后，温度变化仍会触发重绘。
 fn item_value_text(item: &DisplayItem, snapshot: &Snapshot) -> String {
     let value = value_text(&item.id, snapshot);
-    value::expand_cpu_temp_template(&item.format, &value, snapshot).unwrap_or(value)
+    value::expand_temp_template(&item.format, &value, snapshot).unwrap_or(value)
 }
 
 struct RenderContext {
@@ -1024,7 +1035,7 @@ fn draw_bar(pixels: &mut [u8], size: usize, y: usize, rate: u64, color: [u8; 3])
 #[cfg(test)]
 mod tests {
     use super::*;
-    use trafficview_core::{CpuSample, MemSample, NetSample};
+    use trafficview_core::{CpuSample, GpuSample, MemSample, NetSample};
 
     fn snapshot() -> Snapshot {
         Snapshot::new(
@@ -1261,6 +1272,39 @@ mod tests {
             ),
             "14.0%"
         );
+    }
+
+    #[test]
+    fn layout_hides_gpu_row_without_gpu_and_inlines_temp() {
+        let items = vec![DisplayItem {
+            id: "gpu".into(),
+            label: "GPU".into(),
+            unit: "%".into(),
+            format: "{value}  {gpu_temp}".into(),
+            color: "#B197FC".into(),
+            visible: true,
+        }];
+        let mut snapshot = snapshot();
+        let without_gpu = layout(&items, &snapshot, 96);
+        assert!(without_gpu.items.is_empty());
+
+        snapshot.gpu = Some(GpuSample {
+            name: "AMD GPU".into(),
+            util_pct: 12.0,
+            mem_used: 0,
+            mem_total: 0,
+            freq_mhz: None,
+            temp_celsius: Some(55.0),
+            stale: false,
+            observed_at_ms: None,
+        });
+        let with_gpu = layout(&items, &snapshot, 96);
+        assert_eq!(with_gpu.items.len(), 1);
+        assert_eq!(with_gpu.items[0].text, "GPU 12%  55°C");
+
+        snapshot.gpu.as_mut().unwrap().temp_celsius = None;
+        let without_temp = layout(&items, &snapshot, 96);
+        assert_eq!(without_temp.items[0].text, "GPU 12%");
     }
 
     #[test]
