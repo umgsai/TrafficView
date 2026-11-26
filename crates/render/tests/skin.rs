@@ -6,7 +6,7 @@ use trafficview_core::{
 use trafficview_render::{
     skin::{Skin, SkinItem},
     value::display_value,
-    Renderer,
+    HitRegion, Renderer,
 };
 
 fn test_path(name: &str) -> PathBuf {
@@ -155,6 +155,74 @@ fn transparent_background_keeps_zero_alpha() {
         .count();
     let total = (frame.width * frame.height) as usize;
     assert!(opaque > 0 && opaque < total, "text pixels should be sparse");
+}
+
+#[test]
+fn skin_hides_cpu_temp_item_until_a_reading_exists() {
+    let skin = Skin::parse(
+        "[meta]\nname='temp'\n[canvas]\nwidth=120\nheight=50\n[[item]]\nid='cpu_temp'\nrect=[4,4,112,20]\n[[item]]\nid='cpu'\nrect=[4,26,112,20]",
+        Path::new("fixture"),
+    )
+    .unwrap();
+    let mut renderer = Renderer::new(skin).unwrap();
+
+    // 透明画布上只有文字会留下 alpha，因此按逻辑矩形统计不透明像素即可判断是否绘制。
+    let opaque_in = |frame: &trafficview_render::RenderedFrame, [x, y, width, height]: [u32; 4]| {
+        let stride = frame.width;
+        frame
+            .argb
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .enumerate()
+            .filter(|(index, pixel)| {
+                let px = (*index as u32) % stride;
+                let py = (*index as u32) / stride;
+                (x..x + width).contains(&px) && (y..y + height).contains(&py) && pixel[3] > 0
+            })
+            .count()
+    };
+
+    let snapshot = snapshot();
+    assert_eq!(snapshot.cpu_temp, None);
+    let hidden = renderer.render(&snapshot, 1.0).unwrap();
+    assert_eq!(
+        hidden.regions,
+        vec![HitRegion {
+            x: 4,
+            y: 26,
+            width: 112,
+            height: 20
+        }],
+        "隐藏 cpu_temp 时不应产生其命中区域"
+    );
+    assert_eq!(
+        opaque_in(&hidden, [4, 4, 112, 20]),
+        0,
+        "隐藏 cpu_temp 时不应绘制文本"
+    );
+
+    let mut warm = snapshot;
+    warm.cpu_temp = Some(66.4);
+    let shown = renderer.render(&warm, 1.0).unwrap();
+    assert_eq!(
+        shown.regions,
+        vec![
+            HitRegion {
+                x: 4,
+                y: 4,
+                width: 112,
+                height: 20
+            },
+            HitRegion {
+                x: 4,
+                y: 26,
+                width: 112,
+                height: 20
+            },
+        ]
+    );
+    assert!(opaque_in(&shown, [4, 4, 112, 20]) > 0, "有读数时应绘制文本");
 }
 
 #[test]

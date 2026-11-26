@@ -1,7 +1,8 @@
 //! `DisplayItem` 取值、单位格式与模板替换。
 //!
-//! 该模块是皮肤与内置布局共用的唯一取值注册表；未采集的可选值显式显示 `--`，
-//! 不伪造零值。
+//! 该模块是皮肤与内置布局共用的唯一取值注册表；未采集的可选值一般显式显示 `--`，
+//! 不伪造零值。`cpu_temp` 在无读数时由 [`is_available`] 判定为不可用并整行隐藏，
+//! 因此不会绘制占位符。
 
 use trafficview_core::{
     config::RateUnit,
@@ -39,6 +40,9 @@ pub fn numeric_value(id: &str, snapshot: &Snapshot) -> Option<f64> {
 }
 
 /// 格式化后的显示文本。模板中只有 `{value}` 会被替换。
+///
+/// 调用方应先通过 [`is_available`] 判断该项当前是否有可绘制数据；例如
+/// `cpu_temp` 无读数时应整行隐藏，而不是绘制这里返回的 `--`。
 pub fn display_value(id: &str, snapshot: &Snapshot, units: RateUnit, format: &str) -> String {
     if !is_known_id(id) {
         return String::new();
