@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
+use trafficview_core::i18n::{self, Language};
 use trafficview_core::{config::ConfigStore, format::format_bytes, format::format_rate, Snapshot};
 use zbus::{
     object_server::SignalContext,
@@ -38,6 +39,7 @@ const ITEM_IFACE_BASE: i32 = 100;
 )]
 trait Daemon1 {
     fn get_snapshot(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
+    fn get_config(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
 
     #[zbus(property)]
     fn interfaces(&self) -> zbus::Result<Vec<String>>;
@@ -62,7 +64,6 @@ trait Daemon1 {
 
 type ToolTip = (String, Vec<(i32, i32, Vec<u8>)>, String, String);
 
-#[derive(Default)]
 struct Model {
     snapshot: Option<Snapshot>,
     paused: bool,
@@ -70,10 +71,28 @@ struct Model {
     show_in_taskbar: bool,
     interfaces: Vec<String>,
     active_interface: String,
+    lang: Language,
     config_path: Option<PathBuf>,
     online: bool,
     /// 最近一条仍 active 的告警 `(code, message)`。
     alert: Option<(String, String)>,
+}
+
+impl Default for Model {
+    fn default() -> Self {
+        Self {
+            snapshot: None,
+            paused: false,
+            overlay_visible: false,
+            show_in_taskbar: false,
+            interfaces: Vec::new(),
+            active_interface: String::new(),
+            lang: Language::En,
+            config_path: None,
+            online: false,
+            alert: None,
+        }
+    }
 }
 
 impl Model {
@@ -84,93 +103,171 @@ impl Model {
         // "Show in taskbar" 开启时把实时指标塞到 title 里，让 dock 直接显示。
         match (&self.snapshot, self.online, self.paused) {
             (_, false, _) => self.base_title(),
-            (_, true, true) => format!("⏸ {} · {}% · {}%", self.base_title(), 0, 0),
-            (Some(s), true, false) => format!(
-                "↓{} ↑{} · C{:.0} M{:.0}",
-                format_rate(s.net.rx_bps),
-                format_rate(s.net.tx_bps),
-                s.cpu.total_pct,
-                s.mem.used_pct
+            (_, true, true) => i18n::trf(
+                self.lang,
+                "tray.title.paused_metrics",
+                &[("title", &self.base_title()), ("cpu", "0"), ("memory", "0")],
             ),
+            (Some(s), true, false) => {
+                let download = format_rate(s.net.rx_bps);
+                let upload = format_rate(s.net.tx_bps);
+                let cpu = format!("{:.0}", s.cpu.total_pct);
+                let memory = format!("{:.0}", s.mem.used_pct);
+                i18n::trf(
+                    self.lang,
+                    "tray.title.metrics",
+                    &[
+                        ("download", &download),
+                        ("upload", &upload),
+                        ("cpu", &cpu),
+                        ("memory", &memory),
+                    ],
+                )
+            }
             (None, true, false) => self.base_title(),
         }
     }
 
     fn base_title(&self) -> String {
         if !self.online {
-            "TrafficView (daemon offline)".into()
+            i18n::tr(self.lang, "tray.title.offline").into()
         } else if self.paused {
-            "TrafficView (paused)".into()
+            i18n::tr(self.lang, "tray.title.paused").into()
         } else {
-            "TrafficView".into()
+            i18n::tr(self.lang, "tray.app_name").into()
         }
     }
 
     fn tool_tip(&self) -> (String, String) {
         let (title, mut body) = match (&self.snapshot, self.online, self.paused) {
-            (_, false, _) => ("TrafficView".into(), "daemon offline; retrying…".into()),
-            (_, true, true) => ("TrafficView (paused)".into(), String::new()),
+            (_, false, _) => (
+                i18n::tr(self.lang, "tray.app_name").into(),
+                i18n::tr(self.lang, "tray.tooltip.offline").into(),
+            ),
+            (_, true, true) => (
+                i18n::tr(self.lang, "tray.title.paused").into(),
+                String::new(),
+            ),
             (Some(s), true, false) => {
-                let title = format!(
-                    "TrafficView · ↓ {}  ↑ {}",
-                    format_rate(s.net.rx_bps),
-                    format_rate(s.net.tx_bps)
+                let download = format_rate(s.net.rx_bps);
+                let upload = format_rate(s.net.tx_bps);
+                let title = i18n::trf(
+                    self.lang,
+                    "tray.tooltip.title",
+                    &[("download", &download), ("upload", &upload)],
                 );
+                let download_total = format_bytes(s.net.rx_total);
+                let upload_total = format_bytes(s.net.tx_total);
+                let frequency = s
+                    .cpu
+                    .freq_mhz
+                    .map(|value| {
+                        let value = value.to_string();
+                        i18n::trf(
+                            self.lang,
+                            "tray.tooltip.cpu_frequency",
+                            &[("value", &value)],
+                        )
+                    })
+                    .unwrap_or_default();
+                let cpu = format!("{:.0}", s.cpu.total_pct);
+                let memory = format!("{:.0}", s.mem.used_pct);
+                let memory_used = format_bytes(s.mem.total - s.mem.available);
+                let memory_total = format_bytes(s.mem.total);
                 let mut body = vec![
-                    format!("Interface: {}", s.net.iface),
-                    format!(
-                        "Network:  ↓ {}  ↑ {}   (total ↓ {} ↑ {})",
-                        format_rate(s.net.rx_bps),
-                        format_rate(s.net.tx_bps),
-                        format_bytes(s.net.rx_total),
-                        format_bytes(s.net.tx_total),
+                    i18n::trf(
+                        self.lang,
+                        "tray.tooltip.interface",
+                        &[("interface", &s.net.iface)],
                     ),
-                    format!(
-                        "CPU:      {:.0}%{}",
-                        s.cpu.total_pct,
-                        s.cpu
-                            .freq_mhz
-                            .map(|f| format!("  @ {} MHz", f))
-                            .unwrap_or_default()
+                    i18n::trf(
+                        self.lang,
+                        "tray.tooltip.network",
+                        &[
+                            ("download", &download),
+                            ("upload", &upload),
+                            ("download_total", &download_total),
+                            ("upload_total", &upload_total),
+                        ],
                     ),
-                    format!(
-                        "Memory:   {:.0}%  (used {} / total {})",
-                        s.mem.used_pct,
-                        format_bytes(s.mem.total - s.mem.available),
-                        format_bytes(s.mem.total),
+                    i18n::trf(
+                        self.lang,
+                        "tray.tooltip.cpu",
+                        &[("value", &cpu), ("frequency", &frequency)],
+                    ),
+                    i18n::trf(
+                        self.lang,
+                        "tray.tooltip.memory",
+                        &[
+                            ("value", &memory),
+                            ("used", &memory_used),
+                            ("total", &memory_total),
+                        ],
                     ),
                 ];
                 if s.mem.swap_pct > 0.0 {
-                    body.push(format!("Swap:     {:.0}%", s.mem.swap_pct));
+                    let value = format!("{:.0}", s.mem.swap_pct);
+                    body.push(i18n::trf(
+                        self.lang,
+                        "tray.tooltip.swap",
+                        &[("value", &value)],
+                    ));
                 }
                 if let Some(d) = &s.disk {
-                    body.push(format!(
-                        "Disk I/O: ↓ {}  ↑ {}",
-                        format_rate(d.read_bps),
-                        format_rate(d.write_bps),
+                    let read = format_rate(d.read_bps);
+                    let write = format_rate(d.write_bps);
+                    body.push(i18n::trf(
+                        self.lang,
+                        "tray.tooltip.disk",
+                        &[("read", &read), ("write", &write)],
                     ));
                 }
                 if let Some(b) = &s.battery {
-                    body.push(format!("Battery:  {:.0}%  {}", b.percent, b.status));
+                    let value = format!("{:.0}", b.percent);
+                    body.push(i18n::trf(
+                        self.lang,
+                        "tray.tooltip.battery",
+                        &[("value", &value), ("status", &b.status)],
+                    ));
                 }
                 if !s.temps.is_empty() {
                     let parts: Vec<String> = s
                         .temps
                         .iter()
-                        .map(|t| format!("{} {:.0}°C", t.label, t.celsius))
+                        .map(|t| {
+                            let value = format!("{:.0}", t.celsius);
+                            i18n::trf(
+                                self.lang,
+                                "tray.tooltip.temp_sensor",
+                                &[("label", &t.label), ("value", &value)],
+                            )
+                        })
                         .collect();
-                    body.push(format!("Temp:     {}", parts.join(" · ")));
+                    let value = parts.join(" · ");
+                    body.push(i18n::trf(
+                        self.lang,
+                        "tray.tooltip.temp",
+                        &[("value", &value)],
+                    ));
                 }
                 (title, body.join("\n"))
             }
-            (None, true, false) => ("TrafficView".into(), "waiting for first sample…".into()),
+            (None, true, false) => (
+                i18n::tr(self.lang, "tray.app_name").into(),
+                i18n::tr(self.lang, "tray.tooltip.waiting").into(),
+            ),
         };
         match &self.alert {
             Some((_, message)) if self.online => {
+                let alert = i18n::trf(
+                    self.lang,
+                    "tray.tooltip.alert",
+                    &[("message", message.as_str())],
+                );
                 if body.is_empty() {
-                    body = format!("⚠ {message}");
+                    body = alert;
                 } else {
-                    body = format!("{body}\n⚠ {message}");
+                    body = format!("{body}\n{alert}");
                 }
             }
             _ => {}
@@ -294,36 +391,51 @@ impl DbusMenu {
                 map.insert("children-display".into(), Value::from("submenu"));
             }
             ITEM_PAUSE => {
-                map.insert(
-                    "label".into(),
-                    Value::from(if model.paused { "Resume" } else { "Pause" }),
-                );
+                let key = if model.paused {
+                    "tray.menu.resume"
+                } else {
+                    "tray.menu.pause"
+                };
+                map.insert("label".into(), Value::from(i18n::tr(model.lang, key)));
             }
             ITEM_OVERLAY => {
-                map.insert(
-                    "label".into(),
-                    Value::from(if model.overlay_visible {
-                        "Hide overlay"
-                    } else {
-                        "Show overlay"
-                    }),
-                );
+                let key = if model.overlay_visible {
+                    "tray.menu.hide_overlay"
+                } else {
+                    "tray.menu.show_overlay"
+                };
+                map.insert("label".into(), Value::from(i18n::tr(model.lang, key)));
             }
             ITEM_QUIT => {
-                map.insert("label".into(), Value::from("Quit TrafficView"));
+                map.insert(
+                    "label".into(),
+                    Value::from(i18n::tr(model.lang, "tray.menu.quit")),
+                );
             }
             ITEM_INTERFACES => {
-                map.insert("label".into(), Value::from("Network interface"));
+                map.insert(
+                    "label".into(),
+                    Value::from(i18n::tr(model.lang, "tray.menu.network_interface")),
+                );
                 map.insert("children-display".into(), Value::from("submenu"));
             }
             ITEM_SETTINGS => {
-                map.insert("label".into(), Value::from("Settings…"));
+                map.insert(
+                    "label".into(),
+                    Value::from(i18n::tr(model.lang, "tray.menu.settings")),
+                );
             }
             ITEM_CONFIG => {
-                map.insert("label".into(), Value::from("Open config"));
+                map.insert(
+                    "label".into(),
+                    Value::from(i18n::tr(model.lang, "tray.menu.open_config")),
+                );
             }
             ITEM_AUTO => {
-                map.insert("label".into(), Value::from("Automatic"));
+                map.insert(
+                    "label".into(),
+                    Value::from(i18n::tr(model.lang, "tray.menu.automatic")),
+                );
                 map.insert("type".into(), Value::from("radio"));
                 map.insert(
                     "toggle-state".into(),
@@ -732,7 +844,7 @@ async fn run_async() -> Result<()> {
     let mut alerts = proxy.receive_alert().await?;
     let item_context = SignalContext::new(&connection, ITEM_PATH)?;
     let menu_context = SignalContext::new(&connection, MENU_PATH)?;
-    refresh_interfaces(&proxy, &model).await;
+    refresh_config(&proxy, &model).await;
     let mut seconds = 0u32;
     loop {
         tokio::select! {
@@ -749,7 +861,7 @@ async fn run_async() -> Result<()> {
                 let _ = StatusNotifierItem::new_tool_tip(&item_context).await;
             }
             Some(_) = config_changes.next() => {
-                refresh_interfaces(&proxy, &model).await;
+                refresh_config(&proxy, &model).await;
                 // 从 daemon 拉取最新状态，避免 tray model 与配置漂移。
                 if let Ok(paused) = proxy.paused().await {
                     model.write().expect("tray model poisoned").paused = paused;
@@ -788,7 +900,7 @@ async fn run_async() -> Result<()> {
                             was_offline
                         };
                         if was_offline {
-                            refresh_interfaces(&proxy, &model).await;
+                            refresh_config(&proxy, &model).await;
                             let _ = StatusNotifierItem::new_title(&item_context).await;
                             let _ = StatusNotifierItem::new_tool_tip(&item_context).await;
                         }
@@ -804,7 +916,7 @@ async fn run_async() -> Result<()> {
                                 was_offline
                             };
                             if was_offline {
-                                refresh_interfaces(&proxy, &model).await;
+                                refresh_config(&proxy, &model).await;
                                 let _ = StatusNotifierItem::new_title(&item_context).await;
                             }
                             continue;
@@ -825,12 +937,25 @@ async fn run_async() -> Result<()> {
     Ok(())
 }
 
-async fn refresh_interfaces(proxy: &Daemon1Proxy<'_>, model: &Arc<RwLock<Model>>) {
+async fn refresh_config(proxy: &Daemon1Proxy<'_>, model: &Arc<RwLock<Model>>) {
     let interfaces = proxy.interfaces().await.unwrap_or_default();
     let active = proxy.active_interface().await.unwrap_or_default();
+    let lang = proxy
+        .get_config()
+        .await
+        .ok()
+        .and_then(|config| {
+            config
+                .get("language")
+                .and_then(|value| value.try_clone().ok())
+                .and_then(|value| String::try_from(value).ok())
+        })
+        .map(|language| i18n::resolve(&language))
+        .unwrap_or(Language::En);
     let mut model = model.write().expect("tray model poisoned");
     model.interfaces = interfaces;
     model.active_interface = active;
+    model.lang = lang;
 }
 
 async fn register_with_watcher(connection: &zbus::Connection, service: &str) {
@@ -913,6 +1038,21 @@ mod tests {
         assert_eq!(auto["toggle-state"].try_clone().unwrap(), Value::from(0i32));
         assert_eq!(wlan["toggle-state"].try_clone().unwrap(), Value::from(1i32));
         assert_eq!(wlan["label"].try_clone().unwrap(), Value::from("wlan0"));
+    }
+
+    #[test]
+    fn tray_labels_follow_language() {
+        use trafficview_core::i18n::{tr, Language};
+
+        assert_eq!(tr(Language::Zh, "tray.menu.pause"), "暂停");
+        assert_eq!(tr(Language::En, "tray.menu.pause"), "Pause");
+
+        let model = Model {
+            lang: Language::Zh,
+            ..Model::default()
+        };
+        let pause = DbusMenu::item_properties(ITEM_PAUSE, &model);
+        assert_eq!(pause["label"].try_clone().unwrap(), Value::from("暂停"));
     }
 
     #[test]
