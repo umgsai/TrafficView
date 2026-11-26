@@ -677,6 +677,9 @@ fn apply_setting(config: &mut Config, key: &str, value: &str) -> Result<()> {
                 .parse()
                 .with_context(|| format!("{value:?} is not a boolean"))?;
         }
+        "overlay.cpu_temp_sensor" => {
+            config.overlay.cpu_temp_sensor = value.trim().to_owned();
+        }
         other => bail!("unsupported config key: {other}"),
     }
     config
@@ -724,4 +727,16 @@ fn sample(interface: &str, interval_ms: u64, count: usize) -> Result<()> {
         println!("{}", serde_json::to_string(&snapshot)?);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_set_accepts_cpu_temp_sensor() {
+        let mut config = Config::default();
+        apply_setting(&mut config, "overlay.cpu_temp_sensor", " k10temp/Tctl ").unwrap();
+        assert_eq!(config.overlay.cpu_temp_sensor, "k10temp/Tctl");
+    }
 }

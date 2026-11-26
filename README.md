@@ -5,7 +5,7 @@ Linux 桌面实时流量与系统负载监控。核心是一个只读 `/proc`、
 
 ## 当前能力
 
-- **悬浮窗**（X11）：上下行速率、CPU、内存等显示项；可拖动、悬停穿透、调透明度、置顶，
+- **悬浮窗**（X11）：上下行速率、CPU、内存、CPU 温度等显示项；可拖动、悬停穿透、调透明度、置顶，
   皮肤用 TOML 描述，支持阈值变色。
 - **托盘**（StatusNotifierItem + DBusMenu）：暂停/恢复、显示/隐藏悬浮窗、切换网卡、
   打开设置界面或配置文件、退出。
@@ -174,9 +174,14 @@ $ trafficview config path
 | `theme` | `auto` / `light` / `dark` |
 | `[history] retention_days` / `timezone` | 历史保留天数与时区 |
 | `[alerts] rules` | 告警规则：指标、比较符、阈值、持续时间、冷却、静默时段、级别 |
+| `overlay.cpu_temp_sensor` | CPU 温度传感器 label；留空自动识别，例如 `k10temp/Tdie` |
 | `[overlay]` | `visible`、`position`、`opacity`、`click_through`、`always_on_top`、`skin`、`units`、`items` |
 | `[plugins] enabled` | 插件宿主开关 |
 | `[process_traffic] backend` | `off` / `ebpf` / `af_packet` / `auto` |
+
+CPU 温度显示项 id 为 `cpu_temp`，默认配置已包含；检测不到 CPU 传感器时该项自动隐藏。
+需要手动指定传感器时，可执行 `trafficview config set overlay.cpu_temp_sensor k10temp/Tdie`，
+或在 `[overlay]` 中写 `cpu_temp_sensor = "..."`。
 
 自启动：
 
