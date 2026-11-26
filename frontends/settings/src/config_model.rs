@@ -35,6 +35,7 @@ pub struct UiAlertRule {
 /// 界面持有的完整配置快照；缺失字段按 `Config::default()` 兜底。
 #[derive(Debug, Clone, PartialEq)]
 pub struct UiConfig {
+    pub language: String,
     pub sample_interval_ms: u32,
     pub active_interface: String,
     pub memory_include_cache: bool,
@@ -61,6 +62,7 @@ impl Default for UiConfig {
     fn default() -> Self {
         // 与 trafficview_core::config::Config::default() 保持一致。
         Self {
+            language: "auto".into(),
             sample_interval_ms: 1000,
             active_interface: String::new(),
             memory_include_cache: false,
@@ -181,6 +183,9 @@ fn as_i32_vec(value: &OwnedValue) -> Option<Vec<i32>> {
 /// 解析 daemon `GetConfig` 的返回字典；缺失或类型不符的字段回退到默认值。
 pub fn from_dbus(dict: &HashMap<String, OwnedValue>) -> UiConfig {
     let mut cfg = UiConfig::default();
+    if let Some(v) = dict.get("language").and_then(as_string) {
+        cfg.language = v;
+    }
     if let Some(v) = dict.get("sample_interval_ms").and_then(as_u32) {
         cfg.sample_interval_ms = v;
     }
@@ -367,6 +372,7 @@ fn rule_to_value(rule: &UiAlertRule) -> Value<'static> {
 /// 组装一次 `UpdateConfig(a{sv})` 的完整请求体；保存按钮一次性提交。
 pub fn to_update_dbus(cfg: &UiConfig) -> HashMap<String, OwnedValue> {
     let mut top: HashMap<String, OwnedValue> = HashMap::new();
+    top.insert("language".into(), owned(Value::from(cfg.language.clone())));
     top.insert(
         "sample_interval_ms".into(),
         owned(Value::from(cfg.sample_interval_ms)),
@@ -525,5 +531,16 @@ mod tests {
         let parsed = from_dbus(&dict);
         // 长度不对时回退默认位置 [40,40]。
         assert_eq!(parsed.overlay_position, [40, 40]);
+    }
+
+    #[test]
+    fn language_defaults_and_roundtrips() {
+        let cfg = UiConfig::default();
+        assert_eq!(cfg.language, "auto");
+        let dict = to_update_dbus(&UiConfig {
+            language: "en".into(),
+            ..UiConfig::default()
+        });
+        assert_eq!(from_dbus(&dict).language, "en");
     }
 }
