@@ -124,7 +124,10 @@ pub fn parse_nvidia_smi(input: &str) -> Vec<GpuSample> {
                 // 该查询不包含 memory.total；未采集时保留 0 并依赖 CollectorStatus 解释。
                 mem_total: 0,
                 freq_mhz: None,
-                temp_celsius: None,
+                temp_celsius: fields[4]
+                    .parse::<f32>()
+                    .ok()
+                    .filter(|celsius| celsius.is_finite() && (-50.0..=150.0).contains(celsius)),
                 stale: false,
                 observed_at_ms: None,
             })
@@ -219,6 +222,8 @@ unsafe fn read_nvml_gpus() -> Result<Vec<GpuSample>, String> {
             nvml_symbol(library, c"nvmlDeviceGetUtilizationRates")?;
         let memory: unsafe extern "C" fn(*mut libc::c_void, *mut NvmlMemory) -> i32 =
             nvml_symbol(library, c"nvmlDeviceGetMemoryInfo")?;
+        let temperature: Option<unsafe extern "C" fn(*mut libc::c_void, u32, *mut u32) -> i32> =
+            nvml_symbol(library, c"nvmlDeviceGetTemperature").ok();
 
         if init() != 0 {
             return Err("nvmlInit failed (driver mismatch?)".into());
@@ -254,13 +259,19 @@ unsafe fn read_nvml_gpus() -> Result<Vec<GpuSample>, String> {
                 } else {
                     (0, 0)
                 };
+                let temp_celsius = temperature.and_then(|get| {
+                    let mut celsius = 0u32;
+                    // NVML_TEMPERATURE_GPU = 0；读数为整数摄氏度。
+                    (get(device, 0, &mut celsius) == 0 && celsius <= 150)
+                        .then_some(celsius as f32)
+                });
                 gpus.push(GpuSample {
                     name,
                     util_pct,
                     mem_used,
                     mem_total,
                     freq_mhz: None,
-                    temp_celsius: None,
+                    temp_celsius,
                     stale: false,
                     observed_at_ms: None,
                 });
@@ -554,6 +565,25 @@ mod tests {
         assert_eq!(gpus[0].name, "NVIDIA GeForce RTX 4070");
         assert_eq!(gpus[0].util_pct, 42.0);
         assert_eq!(gpus[0].mem_used, 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn nvidia_smi_rows_carry_temperature() {
+        let input = "0, NVIDIA GeForce RTX 3060, 12, 1024, 55\n";
+        let gpus = parse_nvidia_smi(input);
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0].temp_celsius, Some(55.0));
+    }
+
+    #[test]
+    fn nvidia_smi_invalid_temperature_becomes_none() {
+        let gpus = parse_nvidia_smi("0, GPU, 12, 1024, [N/A]\n");
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0].temp_celsius, None);
+
+        let gpus = parse_nvidia_smi("0, GPU, 12, 1024, 300\n");
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0].temp_celsius, None);
     }
 
     #[test]
