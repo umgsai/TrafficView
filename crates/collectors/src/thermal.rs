@@ -10,6 +10,10 @@ pub fn read_thermal_temps(root: &Path) -> Vec<TempSample> {
     };
     let mut temps = Vec::new();
     for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("thermal_zone") {
+            continue;
+        }
         let dir = entry.path();
         let Some(kind) = read_trimmed(&dir.join("type")) else {
             continue;
@@ -85,6 +89,9 @@ mod tests {
         write(&root.join("thermal_zone1/temp"), "oops\n");
         write(&root.join("thermal_zone2/type"), "soc_thermal\n");
         write(&root.join("thermal_zone2/temp"), "200000\n");
+        // 同级 cooling_device 条目不应被当作 thermal zone 采集。
+        write(&root.join("cooling_device0/type"), "Processor\n");
+        write(&root.join("cooling_device0/temp"), "45000\n");
 
         let temps = read_thermal_temps(root);
         assert_eq!(temps.len(), 1);
