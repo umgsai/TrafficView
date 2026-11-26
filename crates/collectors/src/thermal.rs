@@ -131,4 +131,69 @@ mod tests {
             ["acpitz", "k10temp/Tctl", "thermal/cpu_thermal"]
         );
     }
+
+    #[test]
+    fn merged_labels_are_sorted_from_unordered_inputs() {
+        let hwmon = vec![
+            TempSample {
+                label: "zeta/Tdie".into(),
+                celsius: 70.0,
+            },
+            TempSample {
+                label: "alpha".into(),
+                celsius: 60.0,
+            },
+        ];
+        let zones = vec![
+            TempSample {
+                label: "thermal/soc_thermal".into(),
+                celsius: 50.0,
+            },
+            TempSample {
+                label: "thermal/cpu_thermal".into(),
+                celsius: 52.0,
+            },
+        ];
+
+        let merged = merge_thermal_temps(hwmon, zones);
+        assert_eq!(
+            merged
+                .iter()
+                .map(|temp| temp.label.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "alpha",
+                "thermal/cpu_thermal",
+                "thermal/soc_thermal",
+                "zeta/Tdie"
+            ]
+        );
+    }
+
+    #[test]
+    fn zones_matched_by_chip_name_exactly_and_case_insensitively() {
+        let hwmon = vec![TempSample {
+            label: "acpitz".into(),
+            celsius: 65.0,
+        }];
+        let zones = vec![
+            TempSample {
+                label: "thermal/ACPITZ".into(),
+                celsius: 65.0,
+            },
+            TempSample {
+                label: "thermal/acpitz_extra".into(),
+                celsius: 64.0,
+            },
+        ];
+
+        let merged = merge_thermal_temps(hwmon, zones);
+        assert_eq!(
+            merged
+                .iter()
+                .map(|temp| temp.label.as_str())
+                .collect::<Vec<_>>(),
+            ["acpitz", "thermal/acpitz_extra"]
+        );
+    }
 }
