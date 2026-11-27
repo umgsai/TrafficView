@@ -13,6 +13,8 @@ Linux 桌面实时流量与系统负载监控。核心是一个只读 `/proc`、
 - **告警**：阈值 + 持续时间 + 冷却时间 + 静默时段，触发后发送桌面通知。
 - **多前端输出**：`text`、`json`、`waybar`、`polybar`、`tmux`。
 - **设置界面**：GTK4 + libadwaita 独立程序，覆盖通用、网络、显示、告警、历史、插件六个页面。
+- **中英文界面**：`language = "auto" | "zh" | "en"`，覆盖托盘菜单与 tooltip、告警通知
+  与设置界面；默认跟随系统环境。
 
 采集来源：netlink `IFLA_STATS64`（网速）、`/proc/stat`（CPU）、`/proc/meminfo`（内存）、
 `/proc/diskstats`、`/proc/mounts`、`/proc/uptime`，以及 sysfs 中的电池、温度、GPU。
@@ -41,12 +43,15 @@ sudo apt install libgtk-4-dev libadwaita-1-dev   # Debian/Ubuntu
 本仓库仅在以下发行版上验证通过：
 
 - **Deepin 25**（amd64，本机日常使用与构建）
+- **Linux Mint 22.3**（amd64，Cinnamon/X11）：1.1.1 包实机安装运行通过；
+  1.2.0 源码构建与质量门通过，悬浮窗乱码修复经渲染复核
 
 deb 包硬依赖：`libc6 (>= 2.35)`、`libgtk-4-1 (>= 4.0.0)`、
 `libadwaita-1-0 (>= 1.4~beta)`。其它发行版的实际状态：
 
 - **Ubuntu 24.04 LTS**：依赖满足、可以安装，但**实测运行不正常**
-  （具体异常现象与原因待排查），暂不建议在 Ubuntu 上使用该 deb 包。
+  （具体异常现象与原因待排查），暂不建议在 Ubuntu 上使用该 deb 包；同为
+  Ubuntu 24.04 基础的 Linux Mint 22.3 实测正常。
 - **Ubuntu 22.04 LTS**：libc6 满足（2.35），但 libadwaita 只有 1.2.0，
   设置界面二进制过不去；核心功能（悬浮窗 / 托盘 / CLI）理论上能跑，但
   当前打包脚本把所有二进制打成一个包，被 GTK4 依赖卡死。
@@ -62,7 +67,7 @@ deb 包硬依赖：`libc6 (>= 2.35)`、`libgtk-4-1 (>= 4.0.0)`、
 
 ```bash
 ./packaging/build-deb.sh
-sudo dpkg -i dist/trafficview_1.1.1-1_amd64.deb
+sudo dpkg -i dist/trafficview_1.2.0-1_amd64.deb
 ```
 
 `build-deb.sh` 依次执行 fmt、clippy、测试（含独立的设置界面 workspace）与 release 构建，
@@ -70,7 +75,7 @@ sudo dpkg -i dist/trafficview_1.1.1-1_amd64.deb
 自启动条目、桌面入口、图标与文档，不含 eBPF/AF_PACKET 特权 helper。安装后 daemon、
 托盘与悬浮窗（仅 X11 会话）由 `/usr/libexec/trafficview-session` 在登录时启动；
 也可以 `systemctl --user enable --now trafficviewd` 把 daemon 交给 systemd 托管。
-发行说明见 [docs/releases/1.1.1.md](docs/releases/1.1.1.md)。
+发行说明见 [docs/releases/1.2.0.md](docs/releases/1.2.0.md)。
 
 ### 卸载
 
@@ -121,7 +126,7 @@ cargo build --manifest-path frontends/settings/Cargo.toml
 ### 在 arm64 上构建
 
 `build-deb.sh` 用 `dpkg --print-architecture` 决定包架构，在 arm64 机器上直接构建即可，
-产物为 `dist/trafficview_1.1.1-1_arm64.deb`：
+产物为 `dist/trafficview_1.2.0-1_arm64.deb`：
 
 ```bash
 sudo apt install build-essential pkg-config dpkg-dev libgtk-4-dev libadwaita-1-dev
@@ -294,8 +299,10 @@ $ gdbus call --session -d com.trafficview.Daemon1 \
 - 设置界面读写配置、断连横幅降级、自动重连
 - 告警触发并送达桌面通知
 - 无电池、无温度传感器、无 GPU 时按 `CollectorStatus` 降级，不出现伪造零值
-- Debian 主包（1.1.1）：Deepin 25 / amd64 上构建、`dpkg -i` 安装，启动菜单、会话自启动、
+- Debian 主包（1.2.0）：Deepin 25 / amd64 上构建、`dpkg -i` 安装，启动菜单、会话自启动、
   daemon 与设置界面均可用
+- 中英文界面（托盘、通知、设置界面）与 `language` 配置项
+- Linux Mint 22.3 下悬浮窗文字渲染修复（渲染输出复核，数字与字母恢复显示）
 
 仍需换环境验证：KDE Plasma / GNOME 的 Wayland 会话、waybar 实际渲染、XFCE 下 24 小时运行、
 GPU 读数、eBPF 后端、网卡热插拔、休眠唤醒后的统计连续性、rpm/AppImage 的打包。

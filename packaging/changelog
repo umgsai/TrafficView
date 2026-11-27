@@ -1,3 +1,17 @@
+trafficview (1.2.0-1) unstable; urgency=medium
+
+  * 界面中英文多语言（GUI）：新增 language = auto|zh|en，默认 auto 跟随
+    LC_ALL/LANG；覆盖托盘菜单与 tooltip、daemon 告警消息与桌面通知、GTK4 设置界面。
+  * 设置界面「通用」页新增语言下拉；切换后托盘与通知立即生效，设置界面重新
+    打开窗口后生效。
+  * D-Bus GetConfig / UpdateConfig 增加 language 字段，非法值由配置校验拒绝。
+  * 修复部分发行版（如 Linux Mint）悬浮窗数字与字母被渲染成 ✚★✓ 等符号的
+    乱码：cosmic-text 0.12 的字体回退只接受字重完全相等的字体，改为使用默认
+    字重，回退链恢复为 DejaVu Sans / Noto Sans / Noto Sans CJK。
+  * README 补充语言配置说明与卸载时删除本地配置、历史数据的命令。
+
+ -- TrafficView Maintainers <maintainers@trafficview.invalid>  Fri, 27 Nov 2026 10:00:00 +0800
+
 trafficview (1.1.1-1) unstable; urgency=medium
 
   * 默认主题改为 dark。
