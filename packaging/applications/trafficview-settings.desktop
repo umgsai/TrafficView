@@ -10,3 +10,4 @@ Terminal=false
 Categories=System;Monitor;GTK;
 Keywords=traffic;monitor;network;bandwidth;
 StartupNotify=true
+NoDisplay=true
