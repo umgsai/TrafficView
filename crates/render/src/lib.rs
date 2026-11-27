@@ -26,7 +26,7 @@ pub const BASE_DPI: u32 = 96;
 const ROW_HEIGHT: f32 = 22.0;
 const PADDING: f32 = 8.0;
 const GAP: f32 = 8.0;
-const BASE_WIDTH: f32 = 200.0;
+const BASE_WIDTH: f32 = 248.0;
 const FONT_SIZE: f32 = 13.0;
 /// 文字与背景的最低对比度；低于该值时保持色相、调整亮度。
 const MIN_CONTRAST: f32 = 4.5;
@@ -433,11 +433,9 @@ fn draw_item_text(
         &mut context.font_system,
         Metrics::new(font_size, line_height),
     );
-    buffer.set_size(
-        &mut context.font_system,
-        Some(width as f32),
-        Some(height as f32),
-    );
+    // 宽度不设上限：禁用自动换行，超长文本由字形裁剪在列尾截断，
+    // 避免折行后落到下一行高度之外看起来像“消失”。
+    buffer.set_size(&mut context.font_system, None, Some(height as f32));
     // 不用 Weight::MEDIUM：cosmic-text 0.12 的字体回退只接受字重完全相等的字体，
     // 系统缺少 500 字重的无衬线字体时会退到 Dingbats 等符号字体导致乱码。
     let attrs = Attrs::new();
@@ -465,13 +463,14 @@ fn draw_item_text(
         &mut context.swash_cache,
         TextColor::rgba(r, g, b, a),
         |gx, gy, glyph_width, glyph_height, glyph_color| {
-            blend_glyph(
+            blend_glyph_clipped(
                 pixmap,
                 x0 as i32 + gx,
                 y0 as i32 + gy,
                 glyph_width,
                 glyph_height,
                 glyph_color,
+                (x as f32, (x + width) as f32),
             );
         },
     );
@@ -649,11 +648,7 @@ pub fn render_with_scheme_and_alerts(
             &mut context.font_system,
             Metrics::new(font_size, line_height),
         );
-        buffer.set_size(
-            &mut context.font_system,
-            Some(item.width),
-            Some(item.height),
-        );
+        buffer.set_size(&mut context.font_system, None, Some(item.height));
         buffer.set_text(
             &mut context.font_system,
             &item.text,
@@ -667,13 +662,14 @@ pub fn render_with_scheme_and_alerts(
             &mut context.swash_cache,
             TextColor::rgb(r, g, b),
             |x, y, width, height, color| {
-                blend_glyph(
+                blend_glyph_clipped(
                     &mut pixmap,
                     x0 as i32 + x,
                     y0 as i32 + y,
                     width,
                     height,
                     color,
+                    (item.x, item.x + item.width),
                 );
             },
         );
@@ -949,6 +945,26 @@ fn parse_color(value: &str) -> (u8, u8, u8) {
     } else {
         (255, 255, 255)
     }
+}
+
+/// 把字形像素限制在显示项矩形内：超出列宽的文本在列尾截断，
+/// 既不折行到下一行，也不会串进相邻列。
+#[allow(clippy::too_many_arguments)]
+fn blend_glyph_clipped(
+    pixmap: &mut Pixmap,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    color: TextColor,
+    clip: (f32, f32),
+) {
+    let (left, right) = (clip.0 as i32, clip.1 as i32);
+    let glyph_right = x + width as i32;
+    if glyph_right <= left || x >= right {
+        return;
+    }
+    blend_glyph(pixmap, x, y, width, height, color);
 }
 
 fn blend_glyph(pixmap: &mut Pixmap, x: i32, y: i32, width: u32, height: u32, color: TextColor) {
@@ -1279,6 +1295,48 @@ mod tests {
                 "{value}  {cpu_temp}"
             ),
             "14.0%"
+        );
+    }
+
+    #[test]
+    fn wide_values_stay_on_one_line_within_column() {
+        // 三位数使用率 + 三位数温度是最宽情形，必须能整行放进列内；
+        // 否则会被折行到行高之外，看起来像“温度消失”。
+        let mut snapshot = snapshot();
+        snapshot.cpu.total_pct = 100.0;
+        snapshot.cpu_temp = Some(100.0);
+        let items = Config::default().overlay.items;
+        let layout = layout(&items, &snapshot, 96);
+        let cpu = layout
+            .items
+            .iter()
+            .find(|item| item.id == "cpu")
+            .expect("cpu item");
+        assert_eq!(cpu.text, "CPU 100%  100°C");
+
+        let mut ctx = context().lock().unwrap();
+        let font_size = FONT_SIZE * layout.scale;
+        let mut buffer = Buffer::new(
+            &mut ctx.font_system,
+            Metrics::new(font_size, font_size * 1.4),
+        );
+        buffer.set_size(&mut ctx.font_system, None, Some(cpu.height));
+        buffer.set_text(
+            &mut ctx.font_system,
+            &cpu.text,
+            Attrs::new(),
+            Shaping::Advanced,
+        );
+        let lines = buffer.layout_runs().count();
+        let widest = buffer
+            .layout_runs()
+            .map(|run| run.line_w)
+            .fold(0.0_f32, f32::max);
+        assert_eq!(lines, 1, "文本被折成 {lines} 行");
+        assert!(
+            widest <= cpu.width,
+            "文本宽 {widest} 超出列宽 {}",
+            cpu.width
         );
     }
 
