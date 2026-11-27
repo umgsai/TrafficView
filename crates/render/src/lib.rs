@@ -28,7 +28,7 @@ const PADDING: f32 = 8.0;
 const GAP: f32 = 8.0;
 const BASE_WIDTH: f32 = 232.0;
 /// 左列占可用宽度的比例；左列文本含“使用率 + 温度”，比右列更宽。
-const LEFT_COLUMN_RATIO: f32 = 3.0 / 5.0;
+const LEFT_COLUMN_RATIO: f32 = 4.0 / 7.0;
 const FONT_SIZE: f32 = 13.0;
 /// 文字与背景的最低对比度；低于该值时保持色相、调整亮度。
 const MIN_CONTRAST: f32 = 4.5;
@@ -1308,7 +1308,7 @@ mod tests {
     }
 
     #[test]
-    fn columns_use_three_to_two_split() {
+    fn columns_use_four_to_three_split() {
         let items = Config::default().overlay.items;
         let layout = layout(&items, &snapshot(), 96);
         let left = layout
@@ -1322,8 +1322,8 @@ mod tests {
             .find(|item| item.id == "net_down")
             .expect("right column item");
         assert!(
-            (left.width / right.width - 1.5).abs() < 0.1,
-            "左列 {} 与右列 {} 不是 3:2",
+            (left.width / right.width - 4.0 / 3.0).abs() < 0.1,
+            "左列 {} 与右列 {} 不是 4:3",
             left.width,
             right.width
         );
