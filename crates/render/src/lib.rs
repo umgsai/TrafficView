@@ -10,7 +10,7 @@ use std::{
 };
 
 use cosmic_text::{
-    Attrs, Buffer, Color as TextColor, Family, FontSystem, Metrics, Shaping, SwashCache, Weight,
+    Attrs, Buffer, Color as TextColor, Family, FontSystem, Metrics, Shaping, SwashCache,
 };
 use tiny_skia::{Color, Paint, PathBuilder, Pixmap, PixmapPaint, Stroke, Transform};
 use trafficview_core::{
@@ -438,7 +438,9 @@ fn draw_item_text(
         Some(width as f32),
         Some(height as f32),
     );
-    let attrs = Attrs::new().weight(Weight::MEDIUM);
+    // 不用 Weight::MEDIUM：cosmic-text 0.12 的字体回退只接受字重完全相等的字体，
+    // 系统缺少 500 字重的无衬线字体时会退到 Dingbats 等符号字体导致乱码。
+    let attrs = Attrs::new();
     let attrs = if item.mono {
         attrs.family(Family::Monospace)
     } else {
@@ -655,7 +657,7 @@ pub fn render_with_scheme_and_alerts(
         buffer.set_text(
             &mut context.font_system,
             &item.text,
-            Attrs::new().weight(Weight::MEDIUM),
+            Attrs::new(),
             Shaping::Advanced,
         );
         let x0 = item.x;
