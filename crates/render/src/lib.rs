@@ -26,7 +26,9 @@ pub const BASE_DPI: u32 = 96;
 const ROW_HEIGHT: f32 = 22.0;
 const PADDING: f32 = 8.0;
 const GAP: f32 = 8.0;
-const BASE_WIDTH: f32 = 248.0;
+const BASE_WIDTH: f32 = 232.0;
+/// 左列占可用宽度的比例；左列文本含“使用率 + 温度”，比右列更宽。
+const LEFT_COLUMN_RATIO: f32 = 2.0 / 3.0;
 const FONT_SIZE: f32 = 13.0;
 /// 文字与背景的最低对比度；低于该值时保持色相、调整亮度。
 const MIN_CONTRAST: f32 = 4.5;
@@ -493,7 +495,10 @@ pub fn layout(items: &[DisplayItem], snapshot: &Snapshot, dpi: u32) -> Layout {
     let row_height = ROW_HEIGHT * scale;
     let padding = PADDING * scale;
     let gap = GAP * scale;
-    let col_width = (width - padding * 2.0 - gap) / 2.0;
+    // 左列承载“使用率 + 温度”这类较宽文本，按 2:1 分配；右列只需容纳速率与百分比。
+    let usable = width - padding * 2.0 - gap;
+    let left_width = (usable * LEFT_COLUMN_RATIO).round();
+    let right_width = usable - left_width;
 
     let visible_items: Vec<&DisplayItem> = items
         .iter()
@@ -511,7 +516,11 @@ pub fn layout(items: &[DisplayItem], snapshot: &Snapshot, dpi: u32) -> Layout {
         } else {
             format!("{} {}", item.label, value)
         };
-        let x = padding + col as f32 * (col_width + gap);
+        let (x, item_width) = if col == 0 {
+            (padding, left_width)
+        } else {
+            (padding + left_width + gap, right_width)
+        };
         let y = padding + row as f32 * row_height;
         layout_items.push(LayoutItem {
             id: item.id.clone(),
@@ -520,7 +529,7 @@ pub fn layout(items: &[DisplayItem], snapshot: &Snapshot, dpi: u32) -> Layout {
             color: item.color.clone(),
             x,
             y,
-            width: col_width,
+            width: item_width,
             height: row_height,
         });
     }
@@ -1296,6 +1305,31 @@ mod tests {
             ),
             "14.0%"
         );
+    }
+
+    #[test]
+    fn columns_use_two_to_one_split() {
+        let items = Config::default().overlay.items;
+        let layout = layout(&items, &snapshot(), 96);
+        let left = layout
+            .items
+            .iter()
+            .find(|item| item.id == "net_up")
+            .expect("left column item");
+        let right = layout
+            .items
+            .iter()
+            .find(|item| item.id == "net_down")
+            .expect("right column item");
+        assert!(
+            (left.width / right.width - 2.0).abs() < 0.1,
+            "左列 {} 与右列 {} 不是 2:1",
+            left.width,
+            right.width
+        );
+        assert!(left.x < right.x);
+        // 右列尾部贴住右侧内边距，右侧不留空。
+        assert!((right.x + right.width - (layout.width as f32 - PADDING)).abs() < 1.5);
     }
 
     #[test]
