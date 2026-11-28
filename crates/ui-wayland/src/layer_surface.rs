@@ -65,6 +65,7 @@ struct State {
     scheme: ColorScheme,
     alerts: AlertState,
     position: [i32; 2],
+    visible: bool,
 }
 
 pub fn run(config: Config) -> Result<()> {
@@ -127,12 +128,15 @@ pub fn run(config: Config) -> Result<()> {
         scheme: ColorScheme::Dark,
         alerts: AlertState::default(),
         position: config.overlay.position,
+        visible: config.overlay.visible,
     };
 
     queue
         .roundtrip(&mut state)
         .context("cannot receive initial output information")?;
-    state.create_windows(&queue_handle)?;
+    if state.visible {
+        state.create_windows(&queue_handle)?;
+    }
     queue
         .roundtrip(&mut state)
         .context("cannot receive layer-shell configure")?;
@@ -146,7 +150,9 @@ pub fn run(config: Config) -> Result<()> {
             state.latest = Some(update.snapshot);
             state.scheme = update.scheme;
             state.alerts = update.alerts;
+            state.visible = update.visible;
         }
+        state.apply_visibility(&queue_handle)?;
         pump(&connection, &mut queue, &mut state)?;
         state.render_windows(&queue_handle)?;
         connection
@@ -266,7 +272,23 @@ impl State {
             .unwrap_or(1.0)
     }
 
+    /// 托盘/设置窗口切换 `overlay.visible`：销毁或重建所有输出上的窗口。
+    fn apply_visibility(&mut self, queue: &QueueHandle<State>) -> Result<()> {
+        if self.visible {
+            self.create_windows(queue)
+        } else {
+            for (_, window) in self.windows.drain() {
+                window.layer_surface.destroy();
+                window.surface.destroy();
+            }
+            Ok(())
+        }
+    }
+
     fn render_windows(&mut self, queue: &QueueHandle<State>) -> Result<()> {
+        if !self.visible {
+            return Ok(());
+        }
         let Some(snapshot) = self.latest.clone() else {
             return Ok(());
         };

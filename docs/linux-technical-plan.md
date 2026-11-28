@@ -271,13 +271,13 @@ used_pct = (MemTotal - MemAvailable) / MemTotal    // 与 GNOME/htop 口径一�
 |---|---|---|
 | X11 | `override_redirect = true` 顶层窗口，ARGB visual（32 位 depth），`XRender`/`SHM` 提交 | 自己处理 RandR 热插拔、多屏坐标、`Xft.dpi` 缩放 |
 | Wayland (wlroots/KDE) | `zwlr_layer_surface_v1`，`layer=overlay`，`anchor=top|right` + margin，`exclusive_zone=-1`（不挤占面板） | 需要 `wl_shm` + `fractional-scale-v1`；无键盘交互 |
-| GNOME/Wayland | 普通 `xdg_toplevel`（`set_app_id("trafficview")`），位置不可控 | 降级：只保证尺寸/透明度；「贴边常显」改由 Shell 扩展实现 |
+| GNOME/Wayland | 普通 `xdg_toplevel`（`set_app_id("trafficview")`），位置不可控 | 降级：只保证尺寸/透明度/左键拖动；「贴边常显」改由 Shell 扩展实现。本仓库实现：存在 Xwayland（`DISPLAY`）时优先改用 X11 override-redirect 窗口，位置可持久化 |
 
 **鼠标穿透**：
 - X11：`XShape` 输入区域置空 或 `XTestFakeInput` 无关；更简单是设置 `override_redirect` + 空 input shape。
 - Wayland：`wl_surface.set_input_region(empty)`。
 
-**拖拽与吸附**：X11 直接改坐标；Wayland layer-shell 通过改 margin 实现像素级移动（可做「吸附到边角 + 8px 网格」）。
+**拖拽与吸附**：X11 直接改坐标；Wayland layer-shell 通过改 margin 实现像素级移动（可做「吸附到边角 + 8px 网格」）；GNOME 的 `xdg_toplevel` 降级窗口在左键按下时用按钮 serial 调用 `xdg_toplevel.move`，由合成器接管交互式拖动。
 
 **多显示器**：layer-shell 每个 output 一个 surface；X11 按 RandR 输出矩形映射。
 

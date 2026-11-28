@@ -19,6 +19,8 @@ pub(crate) struct SnapshotUpdate {
     pub snapshot: Snapshot,
     pub scheme: ColorScheme,
     pub alerts: AlertState,
+    /// 托盘/设置窗口切换的 `overlay.visible`；Wayland 前端据此销毁或重建窗口。
+    pub visible: bool,
 }
 
 /// 会话后端选择。GNOME 明确不支持 layer-shell，必须走普通窗口。
@@ -228,16 +230,19 @@ async fn stream_once(sender: &std::sync::mpsc::Sender<SnapshotUpdate>) -> Result
     let connection = zbus::Connection::session()
         .await
         .context("cannot connect to the session bus")?;
-    let proxy = zbus::Proxy::new(
-        &connection,
-        "com.trafficview.Daemon1",
-        "/com/trafficview/Daemon1",
-        "com.trafficview.Daemon1",
-    )
-    .await
-    .context("cannot build the trafficviewd proxy")?;
+    let proxy: zbus::Proxy<'_> = zbus::ProxyBuilder::new(&connection)
+        .destination("com.trafficview.Daemon1")?
+        .path("/com/trafficview/Daemon1")?
+        .interface("com.trafficview.Daemon1")?
+        // 关闭属性缓存：托盘切换 OverlayVisible 后必须读到新值，
+        // 默认的 Lazily 缓存会一直返回首次读取的结果。
+        .cache_properties(zbus::CacheProperties::No)
+        .build()
+        .await
+        .context("cannot build the trafficviewd proxy")?;
     let mut scheme = read_scheme(&proxy).await;
     let mut alerts = AlertState::default();
+    let mut visible = read_overlay_visible(&proxy).await;
     let mut last: Option<Snapshot> = None;
     if let Ok(reply) = proxy.call_method("GetSnapshot", &()).await {
         let dict: std::collections::HashMap<String, zbus::zvariant::OwnedValue> =
@@ -249,6 +254,7 @@ async fn stream_once(sender: &std::sync::mpsc::Sender<SnapshotUpdate>) -> Result
                 snapshot,
                 scheme,
                 alerts: alerts.clone(),
+                visible,
             })
             .is_err()
         {
@@ -275,7 +281,18 @@ async fn stream_once(sender: &std::sync::mpsc::Sender<SnapshotUpdate>) -> Result
                     message.body().deserialize()?;
                 let snapshot = trafficview_daemon::dbus::snapshot_from_dbus(&dict)?;
                 last = Some(snapshot.clone());
-                if sender.send(SnapshotUpdate { snapshot, scheme, alerts: alerts.clone() }).is_err() {
+                // 每个采样周期都复核一次可见性：即使错过一次 ConfigChanged
+                // （重连、daemon 重启），托盘开关也能在一个采样周期内生效。
+                visible = read_overlay_visible(&proxy).await;
+                if sender
+                    .send(SnapshotUpdate {
+                        snapshot,
+                        scheme,
+                        alerts: alerts.clone(),
+                        visible,
+                    })
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -284,8 +301,17 @@ async fn stream_once(sender: &std::sync::mpsc::Sender<SnapshotUpdate>) -> Result
                     break;
                 }
                 scheme = read_scheme(&proxy).await;
+                visible = read_overlay_visible(&proxy).await;
                 if let Some(snapshot) = &last {
-                    if sender.send(SnapshotUpdate { snapshot: snapshot.clone(), scheme, alerts: alerts.clone() }).is_err() {
+                    if sender
+                        .send(SnapshotUpdate {
+                            snapshot: snapshot.clone(),
+                            scheme,
+                            alerts: alerts.clone(),
+                            visible,
+                        })
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -295,7 +321,15 @@ async fn stream_once(sender: &std::sync::mpsc::Sender<SnapshotUpdate>) -> Result
                 let (level, code, text): (String, String, String) = message.body().deserialize()?;
                 if alerts.apply_event(&level, &code, &text) {
                     if let Some(snapshot) = &last {
-                        if sender.send(SnapshotUpdate { snapshot: snapshot.clone(), scheme, alerts: alerts.clone() }).is_err() {
+                        if sender
+                            .send(SnapshotUpdate {
+                                snapshot: snapshot.clone(),
+                                scheme,
+                                alerts: alerts.clone(),
+                                visible,
+                            })
+                            .is_err()
+                        {
                             break;
                         }
                     }
@@ -311,4 +345,10 @@ async fn read_scheme(proxy: &zbus::Proxy<'_>) -> ColorScheme {
         Ok(value) if value.eq_ignore_ascii_case("light") => ColorScheme::Light,
         _ => ColorScheme::Dark,
     }
+}
+
+/// 托盘「显示/隐藏悬浮窗」写的是 daemon 的 `OverlayVisible` 属性。
+/// 读取失败时保持显示，避免因一次 D-Bus 抖动让悬浮窗永久消失。
+async fn read_overlay_visible(proxy: &zbus::Proxy<'_>) -> bool {
+    proxy.get_property::<bool>("OverlayVisible").await.unwrap_or(true)
 }

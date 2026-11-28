@@ -1,22 +1,23 @@
 # TrafficView 项目状态
 
-> 最后更新：2026-11-27
+> 最后更新：2026-11-28
 > 当前里程碑：M0–M4 已完成（M2/M3 有少量真机项未覆盖），M5 进行中（Task 2 完成但性能预算未达标；Task 3 的 deb 部分完成，rpm/AppImage 未做）
-> 当前版本：1.2.0（中英文多语言 + 悬浮窗乱码修复）
+> 当前版本：1.2.0（中英文多语言 + 悬浮窗乱码修复 + Wayland/GNOME 悬浮窗修复）
 
 ## 一句话
 
-采集、D-Bus 守护进程、X11 悬浮窗、托盘、GTK4 设置界面与历史/告警均已实现并在
-Cinnamon/X11 实机跑通；版本已统一到 1.2.0，GUI 支持中英文，Debian 主包脚本与发行说明已就绪。
-剩余发布工程是 daemon 稳态 CPU 0.400% 未达 0.3% 预算、rpm/AppImage，以及完整文档与提交。
+采集、D-Bus 守护进程、X11/Wayland 悬浮窗、托盘、GTK4 设置界面与历史/告警均已实现，
+并在 Cinnamon/X11、Ubuntu 26.04 LTS（GNOME 50.1 / Wayland）实机跑通；版本已统一到
+1.2.0，GUI 支持中英文，Debian 主包脚本与发行说明已就绪。剩余发布工程是 daemon
+稳态 CPU 0.400% 未达 0.3% 预算、rpm/AppImage，以及完整文档与提交。
 
 ## 里程碑状态
 
 | 里程碑 | 状态 | 说明 |
 | --- | --- | --- |
 | M0 采集 PoC | 完成 | `/proc` 采集、1024 进制格式化、单调时钟差分 |
-| M1 X11 MVP | 代码完成 | 悬浮窗 + 托盘 + D-Bus v1 契约冻结；计划复选框未勾（差 Wayland/其它桌面） |
-| M2 显示与皮肤 | 代码完成 | Cinnamon/X11 15 项验收通过；KDE/GNOME/Wayland/waybar 未覆盖，完成条件未满足 |
+| M1 X11 MVP | 完成 | 悬浮窗 + 托盘 + D-Bus v1 契约冻结；X11 与 GNOME/Wayland（Ubuntu 26.04）均已验证 |
+| M2 显示与皮肤 | 代码完成 | Cinnamon/X11 15 项验收通过；GNOME/Wayland 显示、拖动与穿透降级通过；KDE/Wayland 与 waybar 未覆盖 |
 | M3 历史/告警/网络 | 基本完成 | 两处真机项未验：网卡热插拔、重启/休眠/主题切换 |
 | M4 高级指标 | 完成 | GPU/eBPF 无硬件实测；`process-ebpf` 为空占位 feature，`backend=ebpf` 恒降级 |
 | M5 发布工程 | 进行中 | Task 2 完成（Step 4 未达标）；Task 3 完成 deb（rpm/AppImage 未做）；Task 4 完成 README/发行说明，专页文档未写；Task 1 未开始 |
@@ -40,10 +41,15 @@ Cinnamon/X11 实机跑通；版本已统一到 1.2.0，GUI 支持中英文，Deb
 - 1.1.1 相对 1.1.0：默认主题改 dark；设置界面新增「关于」页；CPU/GPU 温度默认
   内联显示；文档更正发行版支持范围
 - 发行说明：`docs/releases/1.2.0.md`（1.1.x / 1.0.x 见 `docs/releases/`）
+- 2026-11-28 补充修复（仍为 1.2.0-1）：会话启动器在 Wayland 下也拉起悬浮窗；GNOME 的
+  `xdg_toplevel` 降级窗口支持左键交互式拖动；Wayland 悬浮窗增加 `com.trafficview.Overlay`
+  单实例保护。已在 Ubuntu 26.04 LTS（GNOME 50.1 / Wayland）验证
 
 启动链：登录时 `/etc/xdg/autostart/trafficview-session.desktop` 调用
 `/usr/libexec/trafficview-session`，依次确保 daemon 在跑、等待 `com.trafficview.Daemon1`
-可用、X11 下拉起悬浮窗，最后前台运行托盘。托盘与悬浮窗分别持有
+可用、在 X11 与 Wayland 下拉起悬浮窗（Wayland 优先 layer-shell；GNOME 且存在
+Xwayland 时改用 X11 后端以恢复窗口位置，无 Xwayland 才降级为 xdg_toplevel），
+最后前台运行托盘。托盘与悬浮窗分别持有
 `com.trafficview.Tray` / `com.trafficview.Overlay` 固定总线名做单实例保护。未使用 D-Bus
 激活文件，避免测试环境被系统级激活的 daemon 干扰。
 
@@ -57,6 +63,7 @@ Cinnamon/X11 实机跑通；版本已统一到 1.2.0，GUI 支持中英文，Deb
 | `crates/cli` | `trafficview` 命令行（status/history/config/skin/overlay/tray/settings/autostart） |
 | `crates/tray` | StatusNotifierItem + DBusMenu（固定总线名单实例） |
 | `crates/ui-x11` | X11 悬浮窗（tiny-skia 软件渲染，固定总线名单实例） |
+| `crates/ui-wayland` | Wayland 悬浮窗（layer-shell；GNOME 降级为 xdg_toplevel，固定总线名单实例） |
 | `crates/render` | 皮肤解析与离屏渲染 |
 | `frontends/settings` | 独立 `[workspace]` 的 GTK4/libadwaita 设置界面（根 `Cargo.toml` 用 `exclude` 排除，根构建不解析 GTK） |
 | `packaging/` | systemd 单元、会话启动器、桌面/自启动条目、图标、`build-deb.sh`、`build-release.sh` |
@@ -124,6 +131,29 @@ cargo build --manifest-path frontends/settings/Cargo.toml   # 设置界面（独
 - `dist/trafficview_1.0.1-1_amd64.deb` 构建通过，`dpkg-deb -f` 校验版本与依赖正常；
   截图收录在 `docs/images/` 并写入 README 与 1.0.1 发行说明。
 
+## 最近验收（2026-11-28，Ubuntu 26.04 / GNOME Wayland）
+
+- 现象：Ubuntu GNOME/Wayland 登录后只有 daemon 与托盘，悬浮窗不出现；手工启动悬浮窗后
+  左键拖动无效。原因分别是会话启动器只在 `XDG_SESSION_TYPE=x11` 时拉起 overlay，
+  以及 `xdg_toplevel` 降级窗口没有处理指针事件。
+- 修复：会话启动器在 X11/Wayland 下都拉起悬浮窗（`--session auto`）；Wayland 降级窗口
+  绑定 `wl_seat`/`wl_pointer`，左键按下用 serial 调用 `xdg_toplevel.move` 交给合成器拖动；
+  Wayland 悬浮窗补固定总线名单实例保护。
+- 验证：重新构建的 1.2.0 包在 Ubuntu 26.04 LTS（GNOME 50.1 / Wayland，VirtualBox）上
+  悬浮窗显示、左键拖动、会话自启动、托盘与设置界面均正常；新构建 overlay 连续渲染
+  （4 秒 178 次 buffer attach）。GNOME 无 layer-shell，悬浮窗为普通窗口。
+- 托盘「显示/隐藏悬浮窗」不生效：Wayland 前端未应用 `overlay.visible`，且读取
+  `OverlayVisible` 的 zbus 代理默认 `Lazily` 缓存属性，首次读取后一直返回旧值。
+  修复为关闭属性缓存、按采样周期复核，并只在可见性变化时处理一次。layer-shell
+  未改动（销毁/重建，位置由锚点决定）；GNOME 的 `xdg_toplevel` 隐藏时保留窗口，
+  提交全透明帧并清空输入区域，显示时恢复输入区域并重画，从而保持合成器给出的
+  窗口位置。实测隐藏后 buffer attach 停止且无 `destroy`，显示后同一 `wl_surface`
+  恢复渲染。
+- 退出重开位置丢失：GNOME/Mutter 不允许 Wayland 客户端设置坐标，每次新建
+  `xdg_toplevel` 都会被重新摆放。`--session auto` 在 GNOME 且 `DISPLAY` 可用时
+  改用 X11 后端（Xwayland），位置经 `overlay.position` 持久化。实测位置
+  300,200，退出并重开后仍为 300,200。
+
 ## 最近验收（2026-11-22，Cinnamon/X11）
 
 - 桌面验收 15 项全过：托盘 6 项菜单、悬浮窗位置/透明度/穿透/皮肤热更新、设置窗口双向同步、断连降级与自动重连、开机自启文件写入。
@@ -153,6 +183,9 @@ cargo build --manifest-path frontends/settings/Cargo.toml   # 设置界面（独
   Rust 1.100.0。
 - 1.2.0 的构建与实机验证环境：Linux Mint 22.3（Cinnamon/X11）/ amd64；
   GTK 4.14.5、libadwaita 1.5.0；Rust 1.100.0。
+- Wayland 验收环境：VirtualBox + Ubuntu 26.04 LTS（GNOME 50.1 / Wayland）/ amd64，
+  单网卡 `enp0s3`、无 GPU；Rust 1.100.1。悬浮窗显示与拖动、会话自启动、托盘、
+  设置界面均正常（GNOME 无 layer-shell，悬浮窗为普通窗口）。
 - 桌面验收环境另有 VirtualBox + Cinnamon/X11（无 GPU、单网卡）；`perf` 不可用
   （paranoid=4），profiling 用 strace 与 5s 采样对照。
 - 磁盘：根分区 62G，已用 28G（约 47%），可正常执行 release 构建与测试。
@@ -160,6 +193,7 @@ cargo build --manifest-path frontends/settings/Cargo.toml   # 设置界面（独
 ## 提交记录（近期）
 
 ```
+5b56543 fix(overlay): 修复 Wayland 下悬浮窗不显示且无法拖动
 725aeb1 feat(overlay): 悬浮窗改 2×2 网格布局、自动贴靠屏幕、修复圆角
 46cca14 docs: 增加项目 README 与运行说明
 75bdff4 docs: 更新项目状态与明日续做入口
@@ -168,14 +202,13 @@ a925b56 feat: 托盘与 CLI 增加设置窗口入口
 e7efef1 docs: 记录 M2 在 Cinnamon/X11 的桌面验收结果
 ```
 
-1.2.0 的版本号、`Cargo.lock`、changelog、发行说明、README 与项目状态改动已整理，待提交。
+1.2.0 的版本号、`Cargo.lock`、changelog、发行说明、README 与项目状态改动已提交
+（`5b56543`）；本次 Ubuntu/Wayland 文档同步随下一条提交整理。
 
 ## 从这里继续
 
-1. **重装并复核最新包**：`sudo dpkg -i dist/trafficview_1.2.0-1_amd64.deb`，确认启动菜单
-   同时有 `TrafficView` 与 `TrafficView Settings`、重复点击不产生第二份托盘/悬浮窗、
-   托盘子菜单与静态图标正常、悬浮窗拖动跟手、注销重登后自启动正常；并验证
-   `language` 在 auto/zh/en 下的托盘、通知与设置界面表现；随后复跑完整质量门。
+1. **在 Ubuntu 26.04 LTS（GNOME/Wayland）复核最新包**：悬浮窗显示/拖动、会话自启动、
+   托盘与设置界面已通过；剩余 `language` 在 auto/zh/en 下的全组合表现与完整质量门。
 2. **决定 CPU 预算方向**（阻塞 M5 Step 4）：继续优化慢变采集器/无订阅者跳过序列化，
    或在真实非虚拟化硬件复测后接受差距。
 3. 提交 1.2.0 发布改动（版本号、`Cargo.lock`、`packaging/changelog`、
@@ -188,7 +221,7 @@ e7efef1 docs: 记录 M2 在 Cinnamon/X11 的桌面验收结果
 
 - eBPF 内核侧（M4 Task 4 Step 3）：`process-ebpf` 为空 feature，`backend=ebpf` 恒返回不可用（已按规范降级并给原因）。
 - M3 两处真机验收：网卡热插拔、重启/休眠/主题切换。
-- M1/M2 计划复选框未勾：需要 XFCE/X11、KDE/Wayland、GNOME/Wayland、waybar 覆盖。
+- M2 计划复选框未勾：仍缺 KDE/Wayland、XFCE 长跑与 waybar 覆盖（GNOME/Wayland 已覆盖）。
 - M0–M2 三份计划的复选框仍为 0%，与代码实际交付不符，属记账欠账。
 - 悬浮窗在 VirtualBox 软件渲染下会留旧像素残影（X 未重绘，非程序缺陷）。
 - 包内未带 eBPF/AF_PACKET helper 与对应 system 单元；`backend=ebpf|af_packet` 恒降级。

@@ -265,6 +265,21 @@ fn overlay(session: String, config: Config) -> Result<()> {
             if !wayland {
                 return trafficview_ui_x11::run(config);
             }
+            // GNOME/Mutter 不支持 layer-shell，也不允许客户端设置窗口坐标：
+            // 原生 xdg_toplevel 每次启动都会被合成器重新摆放，无法恢复上次拖动的
+            // 位置。存在 Xwayland 时优先走 X11 后端，位置、置顶与穿透才和其它
+            // 桌面一致；没有 Xwayland 才退回原生 Wayland 窗口。
+            let desktop = env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+            if desktop.to_ascii_uppercase().contains("GNOME")
+                && env::var_os("DISPLAY").is_some()
+            {
+                match trafficview_ui_x11::run(config.clone()) {
+                    Ok(()) => return Ok(()),
+                    Err(error) => eprintln!(
+                        "overlay: X11 backend on Xwayland failed: {error:#}; falling back to Wayland"
+                    ),
+                }
+            }
             wayland_overlay(config)
         }
         other => bail!("unsupported --session {other}; use auto, x11 or wayland"),

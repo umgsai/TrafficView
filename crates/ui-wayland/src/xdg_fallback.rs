@@ -17,14 +17,17 @@ use trafficview_core::{config::Config, Snapshot};
 use wayland_client::{
     globals::{registry_queue_init, GlobalListContents},
     protocol::{
-        wl_buffer, wl_callback, wl_compositor, wl_pointer, wl_registry, wl_seat, wl_shm,
-        wl_shm_pool, wl_surface,
+        wl_buffer, wl_callback, wl_compositor, wl_pointer, wl_region, wl_registry, wl_seat,
+        wl_shm, wl_shm_pool, wl_surface,
     },
     Connection, Dispatch, EventQueue, QueueHandle, WEnum,
 };
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
-use crate::{shm::ShmBuffer, spawn_snapshot_stream, FrameSource, SnapshotUpdate};
+use crate::{
+    shm::{empty_input_region, ShmBuffer},
+    spawn_snapshot_stream, FrameSource, SnapshotUpdate,
+};
 use trafficview_core::ColorScheme;
 use trafficview_render::AlertState;
 
@@ -51,6 +54,8 @@ struct State {
     latest: Option<Snapshot>,
     scheme: ColorScheme,
     alerts: AlertState,
+    visible: bool,
+    applied_visible: bool,
     window: Option<Window>,
     closed: bool,
 }
@@ -85,10 +90,14 @@ pub fn run(config: Config) -> Result<()> {
         latest: None,
         scheme: ColorScheme::Dark,
         alerts: AlertState::default(),
+        visible: config.overlay.visible,
+        applied_visible: false,
         window: None,
         closed: false,
     };
-    state.create_window(&queue_handle, &wm_base)?;
+    if state.visible {
+        state.create_window(&queue_handle, &wm_base)?;
+    }
     queue
         .roundtrip(&mut state)
         .context("cannot receive xdg configure")?;
@@ -99,7 +108,9 @@ pub fn run(config: Config) -> Result<()> {
             state.latest = Some(update.snapshot);
             state.scheme = update.scheme;
             state.alerts = update.alerts;
+            state.visible = update.visible;
         }
+        state.apply_visibility(&queue_handle, &wm_base)?;
         pump(&connection, &mut queue, &mut state)?;
         state.render_window(&queue_handle)?;
         connection
@@ -152,7 +163,58 @@ impl State {
         Ok(())
     }
 
+    /// 托盘/设置窗口切换 `overlay.visible`。
+    ///
+    /// Wayland 客户端无法设置窗口坐标，销毁再重建会让合成器把窗口放到默认位置。
+    /// 因此隐藏时保留 xdg_toplevel，只提交一帧全透明内容并清空输入区域；显示时
+    /// 恢复输入区域并立即重画，窗口位置保持不变。
+    fn apply_visibility(
+        &mut self,
+        queue: &QueueHandle<State>,
+        wm_base: &xdg_wm_base::XdgWmBase,
+    ) -> Result<()> {
+        if self.visible == self.applied_visible {
+            return Ok(());
+        }
+        self.applied_visible = self.visible;
+        if self.visible {
+            match self.window.as_mut() {
+                Some(window) => {
+                    window.surface.set_input_region(None);
+                    window.frame_cb = None;
+                    window.ready = true;
+                }
+                None => self.create_window(queue, wm_base)?,
+            }
+            return Ok(());
+        }
+        let Some(window) = self.window.as_mut() else {
+            return Ok(());
+        };
+        if !window.configured {
+            return Ok(());
+        }
+        match window.buffer.as_mut() {
+            Some(buffer) => {
+                let len = buffer.width as usize * buffer.height as usize * 4;
+                buffer.write(&vec![0u8; len]);
+                buffer.released.store(false, Ordering::SeqCst);
+                window.surface.attach(Some(&buffer.buffer), 0, 0);
+                window
+                    .surface
+                    .damage(0, 0, buffer.width as i32, buffer.height as i32);
+            }
+            None => window.surface.attach(None, 0, 0),
+        }
+        empty_input_region(&self.compositor, &window.surface, queue);
+        window.surface.commit();
+        Ok(())
+    }
+
     fn render_window(&mut self, queue: &QueueHandle<State>) -> Result<()> {
+        if !self.visible {
+            return Ok(());
+        }
         let Some(snapshot) = self.latest.clone() else {
             return Ok(());
         };
@@ -299,6 +361,18 @@ impl Dispatch<wl_shm_pool::WlShmPool, ()> for State {
         _state: &mut Self,
         _proxy: &wl_shm_pool::WlShmPool,
         _event: wl_shm_pool::Event,
+        _data: &(),
+        _connection: &Connection,
+        _queue: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<wl_region::WlRegion, ()> for State {
+    fn event(
+        _state: &mut Self,
+        _proxy: &wl_region::WlRegion,
+        _event: wl_region::Event,
         _data: &(),
         _connection: &Connection,
         _queue: &QueueHandle<Self>,

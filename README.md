@@ -5,7 +5,8 @@ Linux 桌面实时流量与系统负载监控。核心是一个只读 `/proc`、
 
 ## 当前能力
 
-- **悬浮窗**（X11；Wayland 下 KDE/wlroots 走 layer-shell，GNOME 降级为普通窗口）：
+- **悬浮窗**（X11；Wayland 下 KDE/wlroots 走 layer-shell，GNOME 优先经 Xwayland
+  使用 X11 窗口，缺少 Xwayland 时降级为普通窗口）：
   上下行速率、CPU（可内联温度）、内存、GPU（可内联温度）等显示项；
   可拖动、悬停穿透、调透明度、置顶，皮肤用 TOML 描述，支持阈值变色。
 - **托盘**（StatusNotifierItem + DBusMenu）：暂停/恢复、显示/隐藏悬浮窗、切换网卡、
@@ -46,13 +47,15 @@ sudo apt install libgtk-4-dev libadwaita-1-dev   # Debian/Ubuntu
 - **Deepin 25**（amd64，本机日常使用与构建）
 - **Linux Mint 22.3**（amd64，Cinnamon/X11）：1.1.1 包实机安装运行通过；
   1.2.0 源码构建与质量门通过，悬浮窗乱码修复经渲染复核
+- **Ubuntu 26.04 LTS**（amd64，GNOME 50.1 / Wayland，VirtualBox）：1.2.0 包
+  安装运行通过；悬浮窗经 Xwayland 使用 X11 后端，显示、拖动、退出重开后位置恢复，
+  会话自启动、托盘、设置界面均正常
 
 deb 包硬依赖：`libc6 (>= 2.35)`、`libgtk-4-1 (>= 4.0.0)`、
 `libadwaita-1-0 (>= 1.4~beta)`。其它发行版的实际状态：
 
-- **Ubuntu 24.04 LTS**：依赖满足、可以安装，但**实测运行不正常**
-  （具体异常现象与原因待排查），暂不建议在 Ubuntu 上使用该 deb 包；同为
-  Ubuntu 24.04 基础的 Linux Mint 22.3 实测正常。
+- **Ubuntu 24.04 LTS**：依赖满足、可以安装；此前记录的运行异常尚未在 24.04
+  上复测，建议使用包含 Wayland 悬浮窗自启动/拖动修复的最新 1.2.0 包。
 - **Ubuntu 22.04 LTS**：libc6 满足（2.35），但 libadwaita 只有 1.2.0，
   设置界面二进制过不去；核心功能（悬浮窗 / 托盘 / CLI）理论上能跑，但
   当前打包脚本把所有二进制打成一个包，被 GTK4 依赖卡死。
@@ -141,15 +144,17 @@ sudo apt install build-essential pkg-config dpkg-dev libgtk-4-dev libadwaita-1-d
 - 设置界面依赖 GTK4/libadwaita。交叉编译需要对应的 arm64 sysroot 与 pkg-config 信息，
   推荐在 arm64 设备、arm64 容器或用 `qemu` 的 chroot 里原生构建；包的依赖由
   `dpkg-shlibdeps` 从本地二进制推导，无需手写。
-- 悬浮窗在 X11 使用 override-redirect 窗口；Wayland 下 KDE/wlroots 使用 layer-shell，
-  GNOME 等不支持 layer-shell 的桌面降级为普通窗口（位置由合成器决定，不保证贴边置顶）。
+- 悬浮窗在 X11 使用 override-redirect 窗口；Wayland 下 KDE/wlroots 使用 layer-shell。
+  GNOME/Mutter 既不支持 layer-shell，也不允许客户端设置坐标，因此存在 Xwayland
+  （`DISPLAY` 可用）时自动改用 X11 后端，位置可跨重启恢复（置顶与穿透沿用 X11
+  实现）；没有 Xwayland 时才降级为普通窗口（位置由合成器决定）。
   会话自启动会在 X11 与 Wayland 下都拉起悬浮窗。
 
 ## 运行
 
 ```bash
 ./target/release/trafficviewd &          # 守护进程，注册 com.trafficview.Daemon1
-./target/release/trafficview overlay &   # X11 悬浮窗
+./target/release/trafficview overlay &   # 悬浮窗（X11 / Wayland 自动选择后端）
 ./target/release/trafficview tray &      # 托盘图标
 ./target/release/trafficview settings    # 设置界面，也可以从托盘右键菜单打开
 ```
@@ -293,7 +298,8 @@ $ gdbus call --session -d com.trafficview.Daemon1 \
 
 ## 已验证的范围
 
-以下在 VirtualBox + Cinnamon/X11（单网卡 `enp0s3`、无 GPU）与 Deepin 25 / amd64 环境里实机验证过：
+以下在 VirtualBox + Cinnamon/X11（单网卡 `enp0s3`、无 GPU）、Deepin 25 / amd64 与
+Ubuntu 26.04 LTS（GNOME 50.1 / Wayland）环境里实机验证过：
 
 - 守护进程采样、D-Bus 调用、历史写入与跨重启累计
 - 悬浮窗显示/隐藏、位置、透明度、穿透、皮肤热更新与无效皮肤降级
@@ -305,8 +311,14 @@ $ gdbus call --session -d com.trafficview.Daemon1 \
   daemon 与设置界面均可用
 - 中英文界面（托盘、通知、设置界面）与 `language` 配置项
 - Linux Mint 22.3 下悬浮窗文字渲染修复（渲染输出复核，数字与字母恢复显示）
+- Ubuntu 26.04 LTS（GNOME 50.1 / Wayland）：1.2.0 包安装运行正常；会话自启动拉起
+  悬浮窗，左键可拖动；GNOME 存在 Xwayland 时自动使用 X11 后端，退出重开后按
+  `overlay.position` 恢复位置，托盘与设置界面可用
+- Wayland 悬浮窗单实例保护（固定总线名 `com.trafficview.Overlay`，托盘菜单与自启动
+  同时触发也只保留一个进程）
+- GNOME 位置恢复（实测）：手动位置设为 300,200 后退出并重新打开，悬浮窗仍在 300,200
 
-仍需换环境验证：KDE Plasma / GNOME 的 Wayland 会话、waybar 实际渲染、XFCE 下 24 小时运行、
+仍需换环境验证：KDE Plasma（Wayland）、waybar 实际渲染、XFCE 下 24 小时运行、
 GPU 读数、eBPF 后端、网卡热插拔、休眠唤醒后的统计连续性、rpm/AppImage 的打包。
 
 性能现状与后续计划见 [docs/project-status.md](docs/project-status.md)。
