@@ -350,5 +350,8 @@ async fn read_scheme(proxy: &zbus::Proxy<'_>) -> ColorScheme {
 /// 托盘「显示/隐藏悬浮窗」写的是 daemon 的 `OverlayVisible` 属性。
 /// 读取失败时保持显示，避免因一次 D-Bus 抖动让悬浮窗永久消失。
 async fn read_overlay_visible(proxy: &zbus::Proxy<'_>) -> bool {
-    proxy.get_property::<bool>("OverlayVisible").await.unwrap_or(true)
+    proxy
+        .get_property::<bool>("OverlayVisible")
+        .await
+        .unwrap_or(true)
 }

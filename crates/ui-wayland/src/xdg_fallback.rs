@@ -17,8 +17,8 @@ use trafficview_core::{config::Config, Snapshot};
 use wayland_client::{
     globals::{registry_queue_init, GlobalListContents},
     protocol::{
-        wl_buffer, wl_callback, wl_compositor, wl_pointer, wl_region, wl_registry, wl_seat,
-        wl_shm, wl_shm_pool, wl_surface,
+        wl_buffer, wl_callback, wl_compositor, wl_pointer, wl_region, wl_registry, wl_seat, wl_shm,
+        wl_shm_pool, wl_surface,
     },
     Connection, Dispatch, EventQueue, QueueHandle, WEnum,
 };
@@ -321,8 +321,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for State {
             ..
         } = event
         {
-            let pressed =
-                matches!(button_state, WEnum::Value(wl_pointer::ButtonState::Pressed));
+            let pressed = matches!(button_state, WEnum::Value(wl_pointer::ButtonState::Pressed));
             if pressed && button == BTN_LEFT {
                 if let Some(window) = &state.window {
                     window.toplevel._move(&state.seat, serial);

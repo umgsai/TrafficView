@@ -1943,7 +1943,7 @@ dependencies = [
 
 [[package]]
 name = "trafficview-cli"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -1965,7 +1965,7 @@ dependencies = [
 
 [[package]]
 name = "trafficview-collectors"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "libc",
  "tempfile",
@@ -1974,7 +1974,7 @@ dependencies = [
 
 [[package]]
 name = "trafficview-core"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "criterion",
  "libc",
@@ -1986,7 +1986,7 @@ dependencies = [
 
 [[package]]
 name = "trafficview-daemon"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2009,7 +2009,7 @@ dependencies = [
 
 [[package]]
 name = "trafficview-plugin-proto"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2017,7 +2017,7 @@ dependencies = [
 
 [[package]]
 name = "trafficview-render"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "cosmic-text",
  "criterion",
@@ -2029,7 +2029,7 @@ dependencies = [
 
 [[package]]
 name = "trafficview-tray"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -2043,7 +2043,7 @@ dependencies = [
 
 [[package]]
 name = "trafficview-ui-wayland"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -2060,7 +2060,7 @@ dependencies = [
 
 [[package]]
 name = "trafficview-ui-x11"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "futures-util",

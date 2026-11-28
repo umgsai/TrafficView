@@ -2,13 +2,13 @@
 
 > 最后更新：2026-11-28
 > 当前里程碑：M0–M4 已完成（M2/M3 有少量真机项未覆盖），M5 进行中（Task 2 完成但性能预算未达标；Task 3 的 deb 部分完成，rpm/AppImage 未做）
-> 当前版本：1.2.0（中英文多语言 + 悬浮窗乱码修复 + Wayland/GNOME 悬浮窗修复）
+> 当前版本：1.2.1（Wayland/GNOME 悬浮窗修复 + 悬浮窗 4:3 双列布局 + 打包修正）
 
 ## 一句话
 
 采集、D-Bus 守护进程、X11/Wayland 悬浮窗、托盘、GTK4 设置界面与历史/告警均已实现，
 并在 Cinnamon/X11、Ubuntu 26.04 LTS（GNOME 50.1 / Wayland）实机跑通；版本已统一到
-1.2.0，GUI 支持中英文，Debian 主包脚本与发行说明已就绪。剩余发布工程是 daemon
+1.2.1，GUI 支持中英文，Debian 主包脚本与发行说明已就绪。剩余发布工程是 daemon
 稳态 CPU 0.400% 未达 0.3% 预算、rpm/AppImage，以及完整文档与提交。
 
 ## 里程碑状态
@@ -22,10 +22,10 @@
 | M4 高级指标 | 完成 | GPU/eBPF 无硬件实测；`process-ebpf` 为空占位 feature，`backend=ebpf` 恒降级 |
 | M5 发布工程 | 进行中 | Task 2 完成（Step 4 未达标）；Task 3 完成 deb（rpm/AppImage 未做）；Task 4 完成 README/发行说明，专页文档未写；Task 1 未开始 |
 
-## 1.2.0 发布物
+## 1.2.1 发布物
 
-- 版本：根 workspace 与 `frontends/settings` 均为 `1.2.0`
-- 产物（执行 `./packaging/build-deb.sh` 后生成）：`dist/trafficview_1.2.0-1_amd64.deb`
+- 版本：根 workspace 与 `frontends/settings` 均为 `1.2.1`
+- 产物（执行 `./packaging/build-deb.sh` 后生成）：`dist/trafficview_1.2.1-1_amd64.deb`
   与 `dist/SHA256SUMS`
 - 打包方式：`packaging/build-deb.sh` + `dpkg-deb`，不依赖 debhelper/cargo-deb；
   依赖由 `dpkg-shlibdeps` 从暂存区二进制推导
@@ -34,16 +34,19 @@
   入口、hicolor 图标、README/dbus-v1/copyright/changelog
 - 不包含：eBPF/AF_PACKET 特权 helper、对应 system 单元与 `com.trafficview.Ebpf1.conf`；
   选到这些后端时由 daemon 按不可用降级
+- 1.2.1 相对 1.2.0：Wayland 会话自启动悬浮窗（`--session auto`）；GNOME 的
+  `xdg_toplevel` 降级窗口支持左键交互式拖动；GNOME 存在 Xwayland 时改用 X11 后端，
+  位置经 `overlay.position` 持久化并在重启后恢复；Wayland 悬浮窗增加
+  `com.trafficview.Overlay` 单实例保护；修复托盘「显示/隐藏悬浮窗」因
+  `OverlayVisible` 属性缓存而失效；悬浮窗基准宽度 232px、双列 4:3 分配、文字不再
+  折行并在列尾裁剪；设置界面增加 `NoDisplay=true`，不再出现在应用列表
 - 1.2.0 相对 1.1.1：GUI 中英文多语言（托盘、告警通知、设置界面 + `language`
   配置与 D-Bus 字段，125 条静态文案表）；修复部分发行版悬浮窗文字被
   cosmic-text 字重回退选中 Dingbats 符号字体导致的乱码；README 补充语言配置与
   卸载清理命令
 - 1.1.1 相对 1.1.0：默认主题改 dark；设置界面新增「关于」页；CPU/GPU 温度默认
   内联显示；文档更正发行版支持范围
-- 发行说明：`docs/releases/1.2.0.md`（1.1.x / 1.0.x 见 `docs/releases/`）
-- 2026-11-28 补充修复（仍为 1.2.0-1）：会话启动器在 Wayland 下也拉起悬浮窗；GNOME 的
-  `xdg_toplevel` 降级窗口支持左键交互式拖动；Wayland 悬浮窗增加 `com.trafficview.Overlay`
-  单实例保护。已在 Ubuntu 26.04 LTS（GNOME 50.1 / Wayland）验证
+- 发行说明：`docs/releases/1.2.1.md`（1.2.0 / 1.1.x / 1.0.x 见 `docs/releases/`）
 
 启动链：登录时 `/etc/xdg/autostart/trafficview-session.desktop` 调用
 `/usr/libexec/trafficview-session`，依次确保 daemon 在跑、等待 `com.trafficview.Daemon1`
@@ -88,6 +91,21 @@ cargo build --manifest-path frontends/settings/Cargo.toml   # 设置界面（独
 
 设置界面查找顺序：与 `trafficview` 同目录 → `PATH`。本地调试需要软链：
 `ln -sf ../../frontends/settings/target/debug/trafficview-settings target/release/trafficview-settings`（`target/` 不入库，打包时两二进制同装 `/usr/bin`）。
+
+## 最近验收（2026-11-28，1.2.1 发布构建）
+
+- 版本号：根 workspace 与 `frontends/settings` 均升至 `1.2.1`，两份 `Cargo.lock`
+  同步更新。
+- 质量门：`cargo fmt --all -- --check`、`clippy -D warnings`、`dbus-run-session --
+  cargo test --workspace`，以及设置界面独立 workspace 的 fmt/clippy/test 全部通过。
+- 发布链接：release 二进制用 Zig 0.15.2 以 `x86_64-linux-gnu.2.35` 为目标重新链接，
+  三个二进制最高 `GLIBC_2.35`（`trafficviewd` / `trafficview-settings` 为 2.34）。
+- 产物：`dist/trafficview_1.2.1-1_amd64.deb`（6,433,336 字节）与
+  `dist/SHA256SUMS`；`dpkg-deb -I` 显示 Version `1.2.1-1`、Installed-Size 23476、
+  Depends 为 `libadwaita-1-0 (>= 1.4~beta), libc6 (>= 2.35),
+  libglib2.0-0t64 (>= 2.54.0), libgtk-4-1 (>= 4.0.0)`，`sha256sum -c` 通过。
+- 文档：changelog、`docs/releases/1.2.1.md`、README、项目状态与 1.2.0/1.1.x
+  发行说明的指引已同步。
 
 ## 最近验收（2026-11-27，1.2.0）
 
@@ -179,6 +197,11 @@ cargo build --manifest-path frontends/settings/Cargo.toml   # 设置界面（独
 
 ## 环境与磁盘
 
+- 1.2.1 构建环境：Ubuntu 26.04.1 LTS / amd64，Rust 1.100.1；GTK 4.22.4、
+  libadwaita 1.9.1（仅运行库，未装开发包，构建时用本地 pkg-config stub）。
+  发布二进制用 Ubuntu 仓库的 Zig 0.15.2（clang/lld）以 `x86_64-linux-gnu.2.35`
+  为目标链接，产物最高只要求 `GLIBC_2.35`；依赖由 `dpkg-shlibdeps` 推导，glib
+  为 t64 命名。
 - 当前开发/打包环境：Deepin 25（crimson）/ amd64 / X11；GTK 4.18.6、libadwaita 1.5.0；
   Rust 1.100.0。
 - 1.2.0 的构建与实机验证环境：Linux Mint 22.3（Cinnamon/X11）/ amd64；
@@ -193,29 +216,28 @@ cargo build --manifest-path frontends/settings/Cargo.toml   # 设置界面（独
 ## 提交记录（近期）
 
 ```
+4240635 fix(overlay): 修复 Wayland 下显隐失效与重启后位置丢失
 5b56543 fix(overlay): 修复 Wayland 下悬浮窗不显示且无法拖动
-725aeb1 feat(overlay): 悬浮窗改 2×2 网格布局、自动贴靠屏幕、修复圆角
-46cca14 docs: 增加项目 README 与运行说明
-75bdff4 docs: 更新项目状态与明日续做入口
-d22e84b test: 增加采集、渲染与存储基准及发布构建脚本
-a925b56 feat: 托盘与 CLI 增加设置窗口入口
-e7efef1 docs: 记录 M2 在 Cinnamon/X11 的桌面验收结果
+82c54ba fix(packaging): 设置界面不在应用列表中显示
+ffc4ae6 docs: 更新 README 悬浮窗截图为 4:3 双列布局
+963b61e feat(render): 悬浮窗双列宽度比调整为 4:3
+66cb2e8 fix(render): 加宽悬浮窗并禁止折行，避免两位数使用率时温度消失
+b2f1b7e chore(release): 发布 1.2.0
 ```
 
-1.2.0 的版本号、`Cargo.lock`、changelog、发行说明、README 与项目状态改动已提交
-（`5b56543`）；本次 Ubuntu/Wayland 文档同步随下一条提交整理。
+1.2.0 及其后的 Wayland/GNOME 修复已提交；1.2.1 的版本号、`Cargo.lock`、changelog、
+发行说明、README 与项目状态随发布提交，并打 tag `v1.2.1`。
 
 ## 从这里继续
 
-1. **在 Ubuntu 26.04 LTS（GNOME/Wayland）复核最新包**：悬浮窗显示/拖动、会话自启动、
-   托盘与设置界面已通过；剩余 `language` 在 auto/zh/en 下的全组合表现与完整质量门。
+1. **用 1.2.1 包复核 Ubuntu 26.04 LTS（GNOME/Wayland）**：安装
+   `dist/trafficview_1.2.1-1_amd64.deb`，确认悬浮窗显示、拖动、显隐与位置恢复，以及
+   `language` 在 auto/zh/en 下的表现。
 2. **决定 CPU 预算方向**（阻塞 M5 Step 4）：继续优化慢变采集器/无订阅者跳过序列化，
    或在真实非虚拟化硬件复测后接受差距。
-3. 提交 1.2.0 发布改动（版本号、`Cargo.lock`、`packaging/changelog`、
-   `docs/releases/1.2.0.md`、README、项目状态）。
-4. 继续 M5：Task 3 的 rpm/AppImage；Task 4 的 install/configuration/skins/plugins/
+3. 继续 M5：Task 3 的 rpm/AppImage；Task 4 的 install/configuration/skins/plugins/
    desktop-support/permissions/release 专页；Task 1 的 TrafficMonitor 皮肤转换器。
-5. **LICENSE 仍未提供**：打包测试可做，公开发布必须先由项目所有者决定许可证。
+4. **LICENSE 仍未提供**：打包测试可做，公开发布必须先由项目所有者决定许可证。
 
 ## 遗留清单（不阻塞发布）
 

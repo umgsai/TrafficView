@@ -270,9 +270,7 @@ fn overlay(session: String, config: Config) -> Result<()> {
             // 位置。存在 Xwayland 时优先走 X11 后端，位置、置顶与穿透才和其它
             // 桌面一致；没有 Xwayland 才退回原生 Wayland 窗口。
             let desktop = env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
-            if desktop.to_ascii_uppercase().contains("GNOME")
-                && env::var_os("DISPLAY").is_some()
-            {
+            if desktop.to_ascii_uppercase().contains("GNOME") && env::var_os("DISPLAY").is_some() {
                 match trafficview_ui_x11::run(config.clone()) {
                     Ok(()) => return Ok(()),
                     Err(error) => eprintln!(

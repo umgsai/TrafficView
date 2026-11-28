@@ -49,13 +49,14 @@ sudo apt install libgtk-4-dev libadwaita-1-dev   # Debian/Ubuntu
   1.2.0 源码构建与质量门通过，悬浮窗乱码修复经渲染复核
 - **Ubuntu 26.04 LTS**（amd64，GNOME 50.1 / Wayland，VirtualBox）：1.2.0 包
   安装运行通过；悬浮窗经 Xwayland 使用 X11 后端，显示、拖动、退出重开后位置恢复，
-  会话自启动、托盘、设置界面均正常
+  会话自启动、托盘、设置界面均正常。1.2.1 收编同一组 Wayland/GNOME 修复
 
-deb 包硬依赖：`libc6 (>= 2.35)`、`libgtk-4-1 (>= 4.0.0)`、
+deb 包硬依赖：`libc6 (>= 2.35)`、`libglib2.0-0t64 (>= 2.54.0)`（t64 命名，
+Ubuntu 24.04+ / Debian 13+）、`libgtk-4-1 (>= 4.0.0)`、
 `libadwaita-1-0 (>= 1.4~beta)`。其它发行版的实际状态：
 
 - **Ubuntu 24.04 LTS**：依赖满足、可以安装；此前记录的运行异常尚未在 24.04
-  上复测，建议使用包含 Wayland 悬浮窗自启动/拖动修复的最新 1.2.0 包。
+  上复测，建议使用包含 Wayland 悬浮窗自启动/拖动修复的最新 1.2.1 包。
 - **Ubuntu 22.04 LTS**：libc6 满足（2.35），但 libadwaita 只有 1.2.0，
   设置界面二进制过不去；核心功能（悬浮窗 / 托盘 / CLI）理论上能跑，但
   当前打包脚本把所有二进制打成一个包，被 GTK4 依赖卡死。
@@ -71,15 +72,15 @@ deb 包硬依赖：`libc6 (>= 2.35)`、`libgtk-4-1 (>= 4.0.0)`、
 
 ```bash
 ./packaging/build-deb.sh
-sudo dpkg -i dist/trafficview_1.2.0-1_amd64.deb
+sudo dpkg -i dist/trafficview_1.2.1-1_amd64.deb
 ```
 
 `build-deb.sh` 依次执行 fmt、clippy、测试（含独立的设置界面 workspace）与 release 构建，
 再组装单个主包并写出 `dist/SHA256SUMS`。包内包含三个程序、systemd user 单元、会话
 自启动条目、桌面入口、图标与文档，不含 eBPF/AF_PACKET 特权 helper。安装后 daemon、
-托盘与悬浮窗（仅 X11 会话）由 `/usr/libexec/trafficview-session` 在登录时启动；
-也可以 `systemctl --user enable --now trafficviewd` 把 daemon 交给 systemd 托管。
-发行说明见 [docs/releases/1.2.0.md](docs/releases/1.2.0.md)。
+托盘与悬浮窗由 `/usr/libexec/trafficview-session` 在登录时启动（X11 与 Wayland 会话均会
+拉起悬浮窗）；也可以 `systemctl --user enable --now trafficviewd` 把 daemon 交给 systemd 托管。
+发行说明见 [docs/releases/1.2.1.md](docs/releases/1.2.1.md)。
 
 ### 卸载
 
@@ -130,7 +131,7 @@ cargo build --manifest-path frontends/settings/Cargo.toml
 ### 在 arm64 上构建
 
 `build-deb.sh` 用 `dpkg --print-architecture` 决定包架构，在 arm64 机器上直接构建即可，
-产物为 `dist/trafficview_1.2.0-1_arm64.deb`：
+产物为 `dist/trafficview_1.2.1-1_arm64.deb`：
 
 ```bash
 sudo apt install build-essential pkg-config dpkg-dev libgtk-4-dev libadwaita-1-dev
@@ -272,7 +273,7 @@ enabled /home/shang/.config/autostart/trafficview.desktop
 ```
 
 安装 deb 时还会写入系统级条目 `/etc/xdg/autostart/trafficview-session.desktop`，登录后由
-`/usr/libexec/trafficview-session` 拉起 daemon、托盘与悬浮窗（X11）。托盘和悬浮窗使用固定
+`/usr/libexec/trafficview-session` 拉起 daemon、托盘与悬浮窗（X11 与 Wayland）。托盘和悬浮窗使用固定
 总线名做单实例保护，与用户级条目重复启动时不会出现第二份。
 
 ## D-Bus 接口
@@ -307,13 +308,16 @@ Ubuntu 26.04 LTS（GNOME 50.1 / Wayland）环境里实机验证过：
 - 设置界面读写配置、断连横幅降级、自动重连
 - 告警触发并送达桌面通知
 - 无电池、无温度传感器、无 GPU 时按 `CollectorStatus` 降级，不出现伪造零值
-- Debian 主包（1.2.0）：Deepin 25 / amd64 上构建、`dpkg -i` 安装，启动菜单、会话自启动、
-  daemon 与设置界面均可用
+- Debian 主包（1.2.1）：Ubuntu 26.04 LTS / amd64 上构建、质量门通过；1.2.0 包在
+  Deepin 25 上 `dpkg -i` 安装，启动菜单、会话自启动、daemon 与设置界面均可用
+- 悬浮窗布局（1.2.1）：基准宽度 232px、双列 4:3 分配，超长文本列尾裁剪不再折行，
+  两位数使用率与温度可同屏完整显示
 - 中英文界面（托盘、通知、设置界面）与 `language` 配置项
 - Linux Mint 22.3 下悬浮窗文字渲染修复（渲染输出复核，数字与字母恢复显示）
 - Ubuntu 26.04 LTS（GNOME 50.1 / Wayland）：1.2.0 包安装运行正常；会话自启动拉起
   悬浮窗，左键可拖动；GNOME 存在 Xwayland 时自动使用 X11 后端，退出重开后按
-  `overlay.position` 恢复位置，托盘与设置界面可用
+  `overlay.position` 恢复位置，托盘与设置界面可用。1.2.1 包含同一组修复并通过构建与
+  质量门
 - Wayland 悬浮窗单实例保护（固定总线名 `com.trafficview.Overlay`，托盘菜单与自启动
   同时触发也只保留一个进程）
 - GNOME 位置恢复（实测）：手动位置设为 300,200 后退出并重新打开，悬浮窗仍在 300,200

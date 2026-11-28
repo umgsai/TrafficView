@@ -1,3 +1,19 @@
+trafficview (1.2.1-1) unstable; urgency=medium
+
+  * Wayland 会话自启动：会话启动器在 X11 与 Wayland 下都拉起悬浮窗
+    （trafficview overlay --session auto）。
+  * GNOME 等无 layer-shell 桌面的 xdg_toplevel 降级窗口支持左键拖动，
+    通过 wl_seat/wl_pointer + xdg_toplevel.move 交给合成器移动。
+  * GNOME 且存在 Xwayland 时改用 X11 后端，悬浮窗位置经 overlay.position
+    持久化，退出重开后可恢复；Wayland 悬浮窗增加固定总线名单实例保护。
+  * 修复托盘「显示/隐藏悬浮窗」失效：关闭 OverlayVisible 属性的默认缓存，
+    每个采样周期复核可见性；GNOME 降级窗口隐藏时保留窗口以保持位置。
+  * 悬浮窗布局：基准宽度 232px，双列按 4:3 分配；文字不再折行，超长文本
+    在列尾裁剪，避免两位数使用率时温度被折出可视区域。
+  * 设置界面增加 NoDisplay=true，不再出现在应用列表。
+
+ -- TrafficView Maintainers <maintainers@trafficview.invalid>  Sat, 28 Nov 2026 15:00:00 +0800
+
 trafficview (1.2.0-1) unstable; urgency=medium
 
   * 界面中英文多语言（GUI）：新增 language = auto|zh|en，默认 auto 跟随
