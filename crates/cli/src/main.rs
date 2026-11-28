@@ -257,11 +257,7 @@ fn connect() -> Result<zbus::blocking::Connection> {
 fn overlay(session: String, config: Config) -> Result<()> {
     match session.as_str() {
         "x11" => trafficview_ui_x11::run(config),
-        "wayland" => {
-            let desktop = env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
-            let backend = trafficview_ui_wayland::Backend::choose("wayland", &desktop, true);
-            trafficview_ui_wayland::run_with_backend(config, backend, true)
-        }
+        "wayland" => wayland_overlay(config),
         "auto" => {
             let session_type = env::var("XDG_SESSION_TYPE").unwrap_or_default();
             let wayland = session_type.eq_ignore_ascii_case("wayland")
@@ -269,12 +265,28 @@ fn overlay(session: String, config: Config) -> Result<()> {
             if !wayland {
                 return trafficview_ui_x11::run(config);
             }
-            let desktop = env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
-            let backend = trafficview_ui_wayland::Backend::choose("wayland", &desktop, true);
-            trafficview_ui_wayland::run_with_backend(config, backend, true)
+            wayland_overlay(config)
         }
         other => bail!("unsupported --session {other}; use auto, x11 or wayland"),
     }
+}
+
+/// Wayland 悬浮窗没有 X11 那样的窗口单实例保护，这里用固定总线名补齐：
+/// 会话自启动与桌面菜单入口可能同时拉起，否则会出现第二个悬浮窗。
+fn wayland_overlay(config: Config) -> Result<()> {
+    // 连接必须活到窗口退出，否则总线名会提前释放。
+    let instance = connect()?;
+    match instance.request_name("com.trafficview.Overlay") {
+        Ok(()) => {}
+        Err(zbus::Error::NameTaken) => {
+            eprintln!("overlay: another instance is already running");
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    }
+    let desktop = env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+    let backend = trafficview_ui_wayland::Backend::choose("wayland", &desktop, true);
+    trafficview_ui_wayland::run_with_backend(config, backend, true)
 }
 
 fn status(json: bool, format: StatusFormat, allow_disconnected: bool) -> Result<()> {

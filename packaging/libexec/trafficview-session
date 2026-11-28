@@ -2,7 +2,7 @@
 # TrafficView 会话入口：启动菜单与会话自启动共用。
 # 1) 确保 daemon 在跑（已在运行或由 systemd 托管时，新进程会立即退出）；
 # 2) 最多等 5 秒让 com.trafficview.Daemon1 可用；
-# 3) X11 下拉起悬浮窗，然后前台运行托盘。
+# 3) 图形会话下按会话类型拉起悬浮窗（X11 / Wayland），然后前台运行托盘。
 /usr/bin/trafficviewd >/dev/null 2>&1 &
 i=0
 while [ "$i" -lt 25 ]; do
@@ -10,7 +10,9 @@ while [ "$i" -lt 25 ]; do
     i=$((i + 1))
     sleep 0.2
 done
-if [ "${XDG_SESSION_TYPE:-}" = "x11" ]; then
-    /usr/bin/trafficview overlay --session x11 >/dev/null 2>&1 &
-fi
+case "${XDG_SESSION_TYPE:-}" in
+    x11 | wayland)
+        /usr/bin/trafficview overlay --session auto >/dev/null 2>&1 &
+        ;;
+esac
 exec /usr/bin/trafficview tray --autostart

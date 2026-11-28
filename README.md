@@ -5,7 +5,8 @@ Linux 桌面实时流量与系统负载监控。核心是一个只读 `/proc`、
 
 ## 当前能力
 
-- **悬浮窗**（X11）：上下行速率、CPU（可内联温度）、内存、GPU（可内联温度）等显示项；
+- **悬浮窗**（X11；Wayland 下 KDE/wlroots 走 layer-shell，GNOME 降级为普通窗口）：
+  上下行速率、CPU（可内联温度）、内存、GPU（可内联温度）等显示项；
   可拖动、悬停穿透、调透明度、置顶，皮肤用 TOML 描述，支持阈值变色。
 - **托盘**（StatusNotifierItem + DBusMenu）：暂停/恢复、显示/隐藏悬浮窗、切换网卡、
   打开设置界面或配置文件、退出。
@@ -140,8 +141,9 @@ sudo apt install build-essential pkg-config dpkg-dev libgtk-4-dev libadwaita-1-d
 - 设置界面依赖 GTK4/libadwaita。交叉编译需要对应的 arm64 sysroot 与 pkg-config 信息，
   推荐在 arm64 设备、arm64 容器或用 `qemu` 的 chroot 里原生构建；包的依赖由
   `dpkg-shlibdeps` 从本地二进制推导，无需手写。
-- 悬浮窗仅支持 X11。arm64 设备通常运行 Wayland 会话，此时 daemon、命令行与托盘可用，
-  但不会自动出现悬浮窗。
+- 悬浮窗在 X11 使用 override-redirect 窗口；Wayland 下 KDE/wlroots 使用 layer-shell，
+  GNOME 等不支持 layer-shell 的桌面降级为普通窗口（位置由合成器决定，不保证贴边置顶）。
+  会话自启动会在 X11 与 Wayland 下都拉起悬浮窗。
 
 ## 运行
 

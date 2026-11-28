@@ -17,9 +17,10 @@ use trafficview_core::{config::Config, Snapshot};
 use wayland_client::{
     globals::{registry_queue_init, GlobalListContents},
     protocol::{
-        wl_buffer, wl_callback, wl_compositor, wl_registry, wl_shm, wl_shm_pool, wl_surface,
+        wl_buffer, wl_callback, wl_compositor, wl_pointer, wl_registry, wl_seat, wl_shm,
+        wl_shm_pool, wl_surface,
     },
-    Connection, Dispatch, EventQueue, QueueHandle,
+    Connection, Dispatch, EventQueue, QueueHandle, WEnum,
 };
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
@@ -27,10 +28,13 @@ use crate::{shm::ShmBuffer, spawn_snapshot_stream, FrameSource, SnapshotUpdate};
 use trafficview_core::ColorScheme;
 use trafficview_render::AlertState;
 
+/// Linux 输入事件码 `BTN_LEFT`：只有左键按下才发起窗口拖动。
+const BTN_LEFT: u32 = 0x110;
+
 struct Window {
     surface: wl_surface::WlSurface,
     xdg_surface: xdg_surface::XdgSurface,
-    _toplevel: xdg_toplevel::XdgToplevel,
+    toplevel: xdg_toplevel::XdgToplevel,
     configured: bool,
     ready: bool,
     frame_cb: Option<wl_callback::WlCallback>,
@@ -40,6 +44,8 @@ struct Window {
 struct State {
     compositor: wl_compositor::WlCompositor,
     shm: wl_shm::WlShm,
+    seat: wl_seat::WlSeat,
+    pointer: Option<wl_pointer::WlPointer>,
     source: FrameSource,
     snapshot_rx: Receiver<SnapshotUpdate>,
     latest: Option<Snapshot>,
@@ -64,11 +70,16 @@ pub fn run(config: Config) -> Result<()> {
     let wm_base = globals
         .bind::<xdg_wm_base::XdgWmBase, State, ()>(&queue_handle, 1..=6, ())
         .context("xdg_wm_base is unavailable")?;
+    let seat = globals
+        .bind::<wl_seat::WlSeat, State, ()>(&queue_handle, 1..=7, ())
+        .context("wl_seat is unavailable")?;
 
     let source = FrameSource::from_config(&config)?;
     let mut state = State {
         compositor,
         shm,
+        seat,
+        pointer: None,
         source,
         snapshot_rx: spawn_snapshot_stream(),
         latest: None,
@@ -132,7 +143,7 @@ impl State {
         self.window = Some(Window {
             surface,
             xdg_surface,
-            _toplevel: toplevel,
+            toplevel,
             configured: false,
             ready: false,
             frame_cb: None,
@@ -202,6 +213,60 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
         _connection: &Connection,
         _queue: &QueueHandle<Self>,
     ) {
+    }
+}
+
+impl Dispatch<wl_seat::WlSeat, ()> for State {
+    fn event(
+        state: &mut Self,
+        seat: &wl_seat::WlSeat,
+        event: wl_seat::Event,
+        _data: &(),
+        _connection: &Connection,
+        queue: &QueueHandle<Self>,
+    ) {
+        if let wl_seat::Event::Capabilities { capabilities } = event {
+            let has_pointer = matches!(
+                capabilities,
+                WEnum::Value(value) if value.contains(wl_seat::Capability::Pointer)
+            );
+            if has_pointer {
+                if state.pointer.is_none() {
+                    state.pointer = Some(seat.get_pointer::<(), State>(queue, ()));
+                }
+            } else {
+                state.pointer = None;
+            }
+        }
+    }
+}
+
+impl Dispatch<wl_pointer::WlPointer, ()> for State {
+    fn event(
+        state: &mut Self,
+        _pointer: &wl_pointer::WlPointer,
+        event: wl_pointer::Event,
+        _data: &(),
+        _connection: &Connection,
+        _queue: &QueueHandle<Self>,
+    ) {
+        // GNOME 等普通 xdg_toplevel 不允许客户端改坐标，只能把左键按下
+        // 的 serial 交给合成器发起交互式拖动。
+        if let wl_pointer::Event::Button {
+            serial,
+            button,
+            state: button_state,
+            ..
+        } = event
+        {
+            let pressed =
+                matches!(button_state, WEnum::Value(wl_pointer::ButtonState::Pressed));
+            if pressed && button == BTN_LEFT {
+                if let Some(window) = &state.window {
+                    window.toplevel._move(&state.seat, serial);
+                }
+            }
+        }
     }
 }
 
